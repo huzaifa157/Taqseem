@@ -29,7 +29,15 @@ async function nodeEnvironmentFiles(): Promise<string[]> {
   const next = realpathSync(join(root, "node_modules/next"));
   const entries = LAUNCHER_LOADS.map((f) => join(next, f));
   const { fileList } = await nodeFileTrace(entries, { base: root });
-  return [...fileList].map((f) => `./${relative(root, join(root, f)).split(sep).join("/")}`);
+  const files = [...fileList]
+    .map((f) => relative(root, join(root, f)).split(sep).join("/"))
+    .filter((f) => f !== "package.json")
+    // The pnpm folder ("next@16.4.3_@babel+core@…", hashed on Windows, long on Linux) as a
+    // wildcard: Turbopack applies these includes itself, and on Vercel only this form arrived
+    // (literal folder names were silently left out).
+    .map((f) => `./${f.replace(/\.pnpm\/((?:@[^+/]+\+)?[^@/]+)@[^/]+\//g, ".pnpm/$1@*/")}`);
+  console.log(`Vercel startup files: ${files.length} added to every route`);
+  return files;
 }
 
 export default async function config(phase: string): Promise<NextConfig> {
