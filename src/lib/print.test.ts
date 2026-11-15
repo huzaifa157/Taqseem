@@ -87,9 +87,10 @@ describe("print CSS", () => {
   it("trip sheets leave paper and layout to the print dialog; the loading sheet fits a landscape page", () => {
     const css = tripSheetCss();
     // No size: the dialog keeps its paper and portrait / landscape choices.
-    expect(css).toContain("@page { margin: 7mm; }");
+    // Room at the sides, where printers cut off the edge.
+    expect(css).toContain("@page { margin: 10mm 14mm; }");
     expect(css).not.toMatch(/@page {[^}]*size/);
-    expect(css).toContain(".loading-page { width: 283mm; height: 195mm;");
+    expect(css).toContain(".loading-page { width: 269mm; height: 189mm;");
     expect(css).toContain(".loading-page { break-after: page; }");
     expect(css).toContain(
       "@media print and (orientation: portrait) { .print-root { font-size: 6.5pt; } }",

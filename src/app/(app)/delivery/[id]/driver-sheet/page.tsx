@@ -29,7 +29,7 @@ export default async function DriverSheetPage({
       />
       {/* On a narrow screen the sheet scrolls sideways instead of squeezing its columns. */}
       <div className="overflow-x-auto print:overflow-visible">
-        <div className="min-w-[283mm] print:min-w-0">
+        <div className="min-w-[269mm] print:min-w-0">
           <DriverSheet trip={trip} business={profile.business} />
         </div>
       </div>

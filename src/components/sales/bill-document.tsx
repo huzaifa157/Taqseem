@@ -9,6 +9,10 @@ import type { PrintProfile } from "@/server/services/settings";
 
 type Line = BillView["lines"][number];
 
+/** Under the lines: "This bill" stands out; previous, total due and minimum are smaller. */
+const THIS_BILL = "text-[1.3em] leading-tight font-bold";
+const SMALL = "text-[0.85em]";
+
 /**
  * One printed bill (full, or one company's slice): letterhead, customer, lines, then previous
  * pending, this bill and total due. Black and white; sizes in em so the tenant's font size setting
@@ -119,29 +123,33 @@ export function BillDocument({
             <dd className="tabular-nums">−{formatMoney(discount.toFixed(2))}</dd>
           </>
         ) : null}
-        <dt className="font-semibold">This bill</dt>
-        <dd className="font-semibold tabular-nums">{formatMoney(thisBill)}</dd>
+        {/* This bill is what the customer pays for this delivery: the biggest figure. What was
+            owed before, the total and the minimum follow in smaller text. */}
+        <dt className={THIS_BILL}>This bill</dt>
+        <dd className={`${THIS_BILL} tabular-nums`}>{formatMoney(thisBill)}</dd>
         {oldBalance && !new Decimal(oldBalance.toString()).isZero() ? (
           <>
-            <dt>Old balance</dt>
-            <dd className="tabular-nums">{formatMoney(oldBalance)}</dd>
-            <dt>Previous pending</dt>
-            <dd className="tabular-nums">
+            <dt className={SMALL}>Old balance</dt>
+            <dd className={`${SMALL} tabular-nums`}>{formatMoney(oldBalance)}</dd>
+            <dt className={SMALL}>Previous pending</dt>
+            <dd className={`${SMALL} tabular-nums`}>
               {formatMoney(new Decimal(previous.toString()).sub(oldBalance.toString()).toFixed(2))}
             </dd>
           </>
         ) : (
           <>
-            <dt>Previous pending</dt>
-            <dd className="tabular-nums">{formatMoney(previous)}</dd>
+            <dt className={SMALL}>Previous pending</dt>
+            <dd className={`${SMALL} tabular-nums`}>{formatMoney(previous)}</dd>
           </>
         )}
-        <dt className="border-t border-black font-bold">Total due</dt>
-        <dd className="border-t border-black font-bold tabular-nums">{formatMoney(totalDue)}</dd>
+        <dt className={`${SMALL} border-t border-black font-semibold`}>Total due</dt>
+        <dd className={`${SMALL} border-t border-black font-semibold tabular-nums`}>
+          {formatMoney(totalDue)}
+        </dd>
         {minimum ? (
           <>
-            <dt className="font-semibold">Minimum payment</dt>
-            <dd className="font-semibold tabular-nums">{formatMoney(minimum)}</dd>
+            <dt className={SMALL}>Minimum payment</dt>
+            <dd className={`${SMALL} tabular-nums`}>{formatMoney(minimum)}</dd>
           </>
         ) : null}
       </dl>
@@ -247,16 +255,16 @@ export function CompactBillDocument({
             <dd className="tabular-nums">−{formatMoney(discount.toFixed(2))}</dd>
           </>
         ) : null}
-        <dt className="font-bold">This bill</dt>
-        <dd className="font-bold tabular-nums">{formatMoney(thisBill)}</dd>
-        <dt>Previous</dt>
-        <dd className="tabular-nums">{formatMoney(previous)}</dd>
-        <dt className="font-bold">Total due</dt>
-        <dd className="font-bold tabular-nums">{formatMoney(totalDue)}</dd>
+        <dt className={THIS_BILL}>This bill</dt>
+        <dd className={`${THIS_BILL} tabular-nums`}>{formatMoney(thisBill)}</dd>
+        <dt className={SMALL}>Previous</dt>
+        <dd className={`${SMALL} tabular-nums`}>{formatMoney(previous)}</dd>
+        <dt className={`${SMALL} font-semibold`}>Total due</dt>
+        <dd className={`${SMALL} font-semibold tabular-nums`}>{formatMoney(totalDue)}</dd>
         {minimum ? (
           <>
-            <dt>Minimum payment</dt>
-            <dd className="tabular-nums">{formatMoney(minimum)}</dd>
+            <dt className={SMALL}>Minimum payment</dt>
+            <dd className={`${SMALL} tabular-nums`}>{formatMoney(minimum)}</dd>
           </>
         ) : null}
       </dl>

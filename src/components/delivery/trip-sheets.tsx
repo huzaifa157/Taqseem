@@ -130,17 +130,24 @@ export function LoadingSheet({ trip, business }: { trip: TripView; business: Bus
 }
 
 /**
- * Column widths as shares of the page width (in mm of a landscape A4, 283 mm across): #,
- * customer, product, sent, returned, damaged, bill, previous, due, cash, online, cheque, sign.
+ * Column widths as shares of the page width (in mm of a landscape A4 inside its margins): #,
+ * customer, product, returned, damaged, bill, previous, due, cash, online, cheque, sign.
  * Amounts have room for 12,345,678.00 in landscape; upright, the text is smaller to match.
  */
-const COLUMNS_MM = [6, 50, 54, 10, 13, 13, 23, 23, 23, 16, 16, 20, 8];
+const COLUMNS_MM = [6, 48, 52, 14, 14, 22, 22, 22, 16, 16, 20, 9];
+/**
+ * Empty product rows per stop: the driver writes in what comes back (returns and damage), which
+ * can be from an earlier delivery too, so nothing is printed in them.
+ */
+export const RETURN_ROWS = 5;
 const COLUMNS_TOTAL = COLUMNS_MM.reduce((a, b) => a + b, 0);
 
 /**
- * The driver sheet: one continuous table, a row per product, the stop's customer, amounts and
- * payment boxes beside its products. The headings repeat on every page; a stop never splits.
- * Same order as day-end entry. Then the trip total and the cash handover.
+ * The driver sheet: one continuous table, a block per stop: the customer, amounts and payment
+ * boxes beside RETURN_ROWS (5) empty rows where the driver writes the products that come back
+ * (returned and damaged packets, from this delivery or an earlier one). The headings repeat on
+ * every page; a stop never splits. Same order as day-end entry. Then the trip total and the cash
+ * handover.
  */
 export function DriverSheet({ trip, business }: { trip: DriverSheetView; business: Business }) {
   const cell = "border border-black/60 px-[0.25em] py-[0.12em] align-top";
@@ -175,8 +182,7 @@ export function DriverSheet({ trip, business }: { trip: DriverSheetView; busines
           <tr>
             <th className={head}>#</th>
             <th className={head}>Customer</th>
-            <th className={head}>Product</th>
-            <th className={`${head} text-right`}>Sent dz</th>
+            <th className={head}>Product (returned / damaged)</th>
             <th className={head}>Return pk</th>
             <th className={head}>Damage pk</th>
             <th className={`${head} text-right`}>This bill</th>
@@ -189,7 +195,7 @@ export function DriverSheet({ trip, business }: { trip: DriverSheetView; busines
           </tr>
         </thead>
         {trip.stops.map((o, i) => {
-          const rows = Math.max(o.lines.length, 1);
+          const rows = RETURN_ROWS;
           return (
             <tbody key={o.id} className="break-inside-avoid border-t-2 border-black">
               <tr>
@@ -209,7 +215,7 @@ export function DriverSheet({ trip, business }: { trip: DriverSheetView; busines
                       .join(" · ")}
                   </div>
                 </td>
-                <ProductCells line={o.lines[0]} cell={cell} num={num} />
+                <ReturnCells cell={cell} />
                 <td rowSpan={rows} className={num}>
                   {formatMoney(o.amounts.bill)}
                 </td>
@@ -224,9 +230,9 @@ export function DriverSheet({ trip, business }: { trip: DriverSheetView; busines
                 <td rowSpan={rows} className={cell} />
                 <td rowSpan={rows} className={cell} />
               </tr>
-              {o.lines.slice(1).map((l) => (
-                <tr key={l.id}>
-                  <ProductCells line={l} cell={cell} num={num} />
+              {Array.from({ length: RETURN_ROWS - 1 }, (_, r) => (
+                <tr key={r}>
+                  <ReturnCells cell={cell} />
                 </tr>
               ))}
             </tbody>
@@ -271,22 +277,11 @@ export function DriverSheet({ trip, business }: { trip: DriverSheetView; busines
   );
 }
 
-/** One product row: what was sent, and empty boxes for what came back. */
-function ProductCells({
-  line,
-  cell,
-  num,
-}: {
-  line?: { quantity: number; product: { code: string; name: string; shortName: string | null } };
-  cell: string;
-  num: string;
-}) {
+/** One empty row for a product that came back: its name, returned and damaged packets. */
+function ReturnCells({ cell }: { cell: string }) {
   return (
     <>
-      <td className={`${cell} truncate`}>
-        {line ? `${line.product.code} ${line.product.shortName ?? line.product.name}` : ""}
-      </td>
-      <td className={num}>{line ? formatDozensCell(line.quantity) : ""}</td>
+      <td className={`${cell} h-[1.7em]`} />
       <td className={cell} />
       <td className={cell} />
     </>
