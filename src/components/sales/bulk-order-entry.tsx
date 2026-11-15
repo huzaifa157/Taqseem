@@ -751,6 +751,7 @@ function BulkRow({
                 <Combobox
                   label={`Customer, row ${index + 1}`}
                   hideLabel
+                  floating
                   inputClassName="h-8"
                   items={customers.filter((c) => !used.has(c.id))}
                   getKey={(c) => c.id}
