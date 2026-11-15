@@ -9,6 +9,12 @@ Running log of what has been built, decisions taken, and open items. Newest firs
 - Test: 60 customers with a new area in three batches, then the same import again adds nothing.
 - **Deployment note:** set the Vercel project's Function Region to the database's region (Singapore, sin1, for ap-southeast-1); every page makes several queries, so this speeds up the whole online site.
 
+## Bulk orders: customer suggestions visible, Alt+B — done
+
+- The customer suggestions on the sheet were drawn but covered: each customer cell is pinned (sticky) for sideways scrolling, so it is its own layer, and the rows below (and the totals) painted over the list. `Combobox` has a `floating` option: the list goes into the page body (portal) at a fixed place under the box, or above it when there is more room there, and follows the box while the page or the sheet scrolls. Used on the sheet only; the order screen is unchanged.
+- **Alt+B** opens Bulk orders (a letter, like Alt+C for Counter sale; shown in the menu and the `?` list).
+- Browser-checked: row 1 lists below the box, row 12 above it, no suggestion covered; picking by Enter and by click both fill the row and move to its first product.
+
 ## Print fixes: driver sheet, trip sheet margins, long bills, bill totals — done
 
 - **Driver sheet**: no "Sent dz" column and no products printed. Each stop has 5 empty rows (`RETURN_ROWS`) where the driver writes the product that came back, returned packets and damaged packets: returns can be from an earlier delivery, so the sheet does not list this delivery's products. Customer, amounts and payment boxes as before.

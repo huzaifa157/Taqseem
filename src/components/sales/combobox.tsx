@@ -1,6 +1,7 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -28,6 +29,7 @@ export function Combobox<T>({
   hideLabel = false,
   inputClassName,
   onInputKeyDown,
+  floating = false,
 }: {
   label: string;
   items: T[];
@@ -50,11 +52,34 @@ export function Combobox<T>({
   inputClassName?: string;
   /** Keys the box does not use itself (e.g. moving between cells of a sheet). */
   onInputKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>, listOpen: boolean) => void;
+  /**
+   * Draw the list over the whole page, under the box, instead of inside its container: for a box
+   * in a table cell or a scrolling area, where rows painted later or the container's edge would
+   * cover or cut off the list.
+   */
+  floating?: boolean;
 }) {
   const id = useId();
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
+  const [place, setPlace] = useState<React.CSSProperties | null>(null);
+  /** Where the floating list goes: under the box, or above it when there is more room there. */
+  const measure = () => {
+    const el = floating ? document.getElementById(`${id}-input`) : null;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const below = window.innerHeight - r.bottom - 8;
+    const above = r.top - 8;
+    const up = below < 200 && above > below;
+    setPlace({
+      position: "fixed",
+      left: Math.max(4, Math.min(r.left, window.innerWidth - Math.max(r.width, 320) - 4)),
+      width: Math.max(r.width, 320),
+      maxHeight: Math.min(320, up ? above : below),
+      ...(up ? { bottom: window.innerHeight - r.top + 4 } : { top: r.bottom + 4 }),
+    });
+  };
 
   const q = query.trim().toLowerCase();
   const results = (
@@ -67,6 +92,17 @@ export function Combobox<T>({
       : items
   ).slice(0, limit);
   const showList = open && q.length > 0;
+  // Keep the floating list with its box while the page or the sheet scrolls.
+  useEffect(() => {
+    if (!floating || !showList) return;
+    const follow = () => measure();
+    window.addEventListener("scroll", follow, true);
+    window.addEventListener("resize", follow);
+    return () => {
+      window.removeEventListener("scroll", follow, true);
+      window.removeEventListener("resize", follow);
+    };
+  });
 
   const pick = (item: T) => {
     onSelect(item);
@@ -98,8 +134,12 @@ export function Combobox<T>({
           setQuery(e.target.value);
           setOpen(true);
           setActive(0);
+          measure();
         }}
-        onFocus={() => setOpen(true)}
+        onFocus={() => {
+          setOpen(true);
+          measure();
+        }}
         onBlur={() => setTimeout(() => setOpen(false), 150)}
         onKeyDown={(e) => {
           onInputKeyDown?.(e, showList);
@@ -135,53 +175,64 @@ export function Combobox<T>({
         </p>
       ) : null}
       {showList ? (
-        <ul
-          id={`${id}-list`}
-          role="listbox"
-          aria-label={label}
-          className="bg-popover absolute z-20 mt-1 max-h-80 w-full overflow-auto rounded-md border py-1 shadow-md"
-        >
-          {results.length === 0 && onNoMatch ? (
-            <li
-              id={`${id}-opt-0`}
-              role="option"
-              aria-selected
-              onMouseDown={(e) => {
-                e.preventDefault();
-                onNoMatch(query.trim());
-                setQuery("");
-                setOpen(false);
-              }}
-              className="bg-accent text-accent-foreground cursor-pointer px-3 py-2 text-sm font-medium"
-            >
-              {noMatchLabel ? noMatchLabel(query.trim()) : emptyText}
-            </li>
-          ) : results.length === 0 ? (
-            <li className="text-muted-foreground px-3 py-2 text-sm">{emptyText}</li>
-          ) : null}
-          {results.map((item, i) => (
-            <li
-              key={getKey(item)}
-              id={`${id}-opt-${i}`}
-              role="option"
-              aria-selected={i === active}
-              onMouseDown={(e) => {
-                e.preventDefault();
-                pick(item);
-              }}
-              onMouseEnter={() => setActive(i)}
-              className={cn(
-                "cursor-pointer px-3 py-1.5 text-sm",
-                i === active && "bg-accent text-accent-foreground",
-              )}
-            >
-              {render(item)}
-            </li>
-          ))}
-        </ul>
+        <Floating on={floating}>
+          <ul
+            id={`${id}-list`}
+            role="listbox"
+            aria-label={label}
+            style={floating && place ? place : undefined}
+            className={cn(
+              "bg-popover overflow-auto rounded-md border py-1 shadow-md",
+              floating ? "z-50" : "absolute z-20 mt-1 max-h-80 w-full",
+            )}
+          >
+            {results.length === 0 && onNoMatch ? (
+              <li
+                id={`${id}-opt-0`}
+                role="option"
+                aria-selected
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  onNoMatch(query.trim());
+                  setQuery("");
+                  setOpen(false);
+                }}
+                className="bg-accent text-accent-foreground cursor-pointer px-3 py-2 text-sm font-medium"
+              >
+                {noMatchLabel ? noMatchLabel(query.trim()) : emptyText}
+              </li>
+            ) : results.length === 0 ? (
+              <li className="text-muted-foreground px-3 py-2 text-sm">{emptyText}</li>
+            ) : null}
+            {results.map((item, i) => (
+              <li
+                key={getKey(item)}
+                id={`${id}-opt-${i}`}
+                role="option"
+                aria-selected={i === active}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  pick(item);
+                }}
+                onMouseEnter={() => setActive(i)}
+                className={cn(
+                  "cursor-pointer px-3 py-1.5 text-sm",
+                  i === active && "bg-accent text-accent-foreground",
+                )}
+              >
+                {render(item)}
+              </li>
+            ))}
+          </ul>
+        </Floating>
       ) : null}
     </div>
   );
+}
+
+/** The floating list goes straight into the page body, above everything else. */
+function Floating({ on, children }: { on: boolean; children: React.ReactNode }) {
+  return on ? createPortal(children, document.body) : children;
 }
 
 /**

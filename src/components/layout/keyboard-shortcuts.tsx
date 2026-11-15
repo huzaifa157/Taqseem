@@ -14,7 +14,7 @@ import { rememberedList } from "./record-pager";
  *                leave or reset, go back to the page above (asks first when a form has unsaved
  *                changes)
  *   Alt+1 … 0    the sections of the side menu, in order
- *   Alt+C        Counter sale (side menu items without a number have a letter)
+ *   Alt+C        Counter sale, Alt+B Bulk orders (side menu items without a number have a letter)
  *   Alt+N        the page's main "New …" button
  *   Ctrl+Enter   save the form you are in
  *   just type    on a list: goes into its search box, which filters as you type; on a long page
@@ -305,6 +305,7 @@ const SHORTCUTS: [string, string][] = [
   ["Esc", "Leave the box, or reset a list search; again: back to the page above"],
   ["Alt+1 … Alt+0", "Open a section of the side menu"],
   ["Alt+C", "Counter sale"],
+  ["Alt+B", "Bulk orders"],
   ["Alt+N", "New (order, customer, payment …) on the page you are on"],
   ["Ctrl+Enter", "Save the form, book the order"],
   ["/  or  Ctrl+K", "Search everything"],
