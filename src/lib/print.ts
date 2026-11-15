@@ -124,6 +124,18 @@ export function toSheets<T>(items: T[], perSheet: 1 | 2, copies: 1 | 2 = 1): T[]
 const mm = (n: number) => `${Number(n.toFixed(2))}mm`;
 
 /**
+ * Two to a sheet, but a bill too long for its half (marked `data-long` in the preview): instead
+ * of being cut off, or pushing the cut line onto another page, its sheet prints the bills one
+ * after the other on full pages, each starting on a new page, its margin repeated on every page.
+ */
+const LONG_PRINT_CSS = [
+  `  .print-sheet[data-long] { height: auto; display: block; break-after: page; }`,
+  `  .print-sheet[data-long]:last-child { break-after: auto; }`,
+  `  .print-sheet[data-long] .print-bill { width: auto; height: auto; overflow: visible; -webkit-box-decoration-break: clone; box-decoration-break: clone; }`,
+  `  .print-sheet[data-long] .print-bill + .print-bill { border: 0; break-before: page; }`,
+].join("\n");
+
+/**
  * Print CSS for a page of bills. One bill per sheet: the page margin is the setting and a long bill
  * flows onto further pages. Two per sheet (two per A4, or two copies per A5): no page margin, each
  * half gets the margin as padding, with a dashed cut line between the halves.
@@ -141,6 +153,7 @@ export function billPageCss(s: PrintSettings): string {
       `  .print-sheet:last-child { break-after: auto; }`,
       `  .print-bill { width: ${mm(bill.widthMm)}; height: ${mm(bill.heightMm)}; padding: ${mm(COPY_MARGIN_MM)}; overflow: hidden; box-sizing: border-box; position: relative; }`,
       `  .print-bill + .print-bill { border-left: 1px dashed #000; }`,
+      LONG_PRINT_CSS,
       `}`,
     ].join("\n");
   }
@@ -154,6 +167,7 @@ export function billPageCss(s: PrintSettings): string {
       `  .print-sheet:last-child { break-after: auto; }`,
       `  .print-bill { height: ${mm(bill.heightMm)}; padding: ${mm(s.marginMm)}; overflow: hidden; box-sizing: border-box; }`,
       `  .print-bill + .print-bill { border-top: 1px dashed #000; }`,
+      LONG_PRINT_CSS,
       `}`,
     ].join("\n");
   }
@@ -183,7 +197,13 @@ export function statementPageCss(s: PrintSettings): string {
  * front), and the driver sheet's columns are shares of the page width, in smaller text when the
  * page is upright.
  */
-export const TRIP_SHEET_PAGE_MM = { width: 297, height: 210, margin: 7 } as const;
+/**
+ * Landscape A4 with room at the edges: 14 mm at the sides (most printers cannot print the outer
+ * 4–6 mm, and the sides were cut off with 7 mm), 10 mm top and bottom.
+ */
+export const TRIP_SHEET_PAGE_MM = { width: 297, height: 210, marginX: 14, marginY: 10 } as const;
+/** The printable width of a trip sheet: the screen preview is laid out at this width. */
+export const TRIP_SHEET_INNER_WIDTH_MM = TRIP_SHEET_PAGE_MM.width - 2 * TRIP_SHEET_PAGE_MM.marginX;
 export const DRIVER_SHEET_FONT_PT = 9;
 /** The driver sheet's text when printed upright (portrait), so its 14 columns still fit. */
 export const DRIVER_SHEET_PORTRAIT_FONT_PT = 6.5;
@@ -191,12 +211,12 @@ export const LOADING_SHEET_FONT_PT = 13;
 export const LOADING_SHEET_MIN_FONT_PT = 7;
 
 export function tripSheetCss(): string {
-  const { width, height, margin } = TRIP_SHEET_PAGE_MM;
+  const { width, height, marginX, marginY } = TRIP_SHEET_PAGE_MM;
   return [
-    `@page { margin: ${mm(margin)}; }`,
+    `@page { margin: ${mm(marginY)} ${mm(marginX)}; }`,
     `.print-root { font-size: ${DRIVER_SHEET_FONT_PT}pt; }`,
     // On screen the loading sheet is one landscape page, so the fitting measures that page.
-    `@media screen { .loading-page { width: ${mm(width - 2 * margin)}; height: ${mm(height - 2 * margin - 1)}; overflow: hidden; box-sizing: border-box; } }`,
+    `@media screen { .loading-page { width: ${mm(width - 2 * marginX)}; height: ${mm(height - 2 * marginY - 1)}; overflow: hidden; box-sizing: border-box; } }`,
     `@media print { .loading-page { break-after: page; } .loading-page:last-child { break-after: auto; } }`,
     `@media print and (orientation: portrait) { .print-root { font-size: ${DRIVER_SHEET_PORTRAIT_FONT_PT}pt; } }`,
   ].join("\n");

@@ -8,10 +8,21 @@ import {
   toSheets,
 } from "@/lib/print";
 
-import { FitCopies } from "./fit-copies";
+import { FitBills } from "./fit-copies";
 import { PrintStyles } from "./print-frame";
 
 const mm = (n: number) => `${n}mm`;
+
+/**
+ * Preview of a sheet whose bill is too long for half a sheet (FitBills marks it): its bills one
+ * under the other at full width, as they print, with a note that is not printed.
+ */
+const LONG_SCREEN_CSS = `@media screen {
+  .print-sheet[data-long] { display: block; }
+  .print-sheet[data-long] .print-bill { width: auto; height: auto; min-height: 0; overflow: visible; }
+  .print-sheet[data-long] .print-bill + .print-bill { border-left: 0; border-top: 1px dashed currentColor; }
+  .print-sheet[data-long]::before { content: "Too long for half a sheet: printed on full pages, each copy starting on a new page."; display: block; padding: 4px 8px; font-size: 12px; background: #fef3c7; color: #000; }
+}`;
 
 /**
  * Lays bills out on printed sheets: one per sheet, two per A4, or two copies of each bill side by
@@ -32,12 +43,14 @@ export function BillSheets({
   .print-sheet { width: ${mm(layout.sheet.widthMm)}; max-width: 100%; display: flex; }
   .print-bill { width: ${mm(layout.bill.widthMm)}; height: ${mm(layout.bill.heightMm)}; padding: ${mm(COPY_MARGIN_MM)}; overflow: hidden; box-sizing: border-box; position: relative; flex: none; }
   .print-bill + .print-bill { border-left: 1px dashed currentColor; }
-}`
+}
+${LONG_SCREEN_CSS}`
     : `@media screen {
   .print-sheet { width: ${mm(layout.sheet.widthMm)}; max-width: 100%; }
   .print-bill { min-height: ${mm(layout.bill.heightMm)}; padding: ${mm(settings.marginMm)}; }
   .print-bill + .print-bill { border-top: 1px dashed currentColor; }
-}`;
+}
+${LONG_SCREEN_CSS}`;
   return (
     <div className="print-root space-y-6 print:space-y-0">
       <PrintStyles
@@ -45,7 +58,12 @@ export function BillSheets({
           ${billPageCss(settings)}\n${screenCss}
         `}
       />
-      {layout.sideBySide ? <FitCopies fontPt={copyFontPt(settings)} /> : null}
+      {layout.perSheet === 2 ? (
+        <FitBills
+          fontPt={layout.sideBySide ? copyFontPt(settings) : settings.fontSizePt}
+          shrink={layout.sideBySide}
+        />
+      ) : null}
       {toSheets(bills, layout.perSheet, layout.copies).map((sheet, i) => (
         <section
           key={i}
@@ -53,11 +71,7 @@ export function BillSheets({
           aria-label={`Sheet ${i + 1}`}
         >
           {sheet.map((b, j) => (
-            <div
-              key={`${b.key}-${j}`}
-              className="print-bill"
-              data-fit={layout.sideBySide ? "" : undefined}
-            >
+            <div key={`${b.key}-${j}`} className="print-bill" data-height-mm={layout.bill.heightMm}>
               {layout.copies === 2 ? (
                 // In the top edge, above the bill: takes none of its space.
                 <p className="absolute inset-x-0 top-[0.6mm] text-center text-[6.5pt] leading-none font-bold tracking-[0.2em]">

@@ -2,6 +2,13 @@
 
 Running log of what has been built, decisions taken, and open items. Newest first.
 
+## Print fixes: driver sheet, trip sheet margins, long bills, bill totals — done
+
+- **Driver sheet**: no "Sent dz" column and no products printed. Each stop has 5 empty rows (`RETURN_ROWS`) where the driver writes the product that came back, returned packets and damaged packets: returns can be from an earlier delivery, so the sheet does not list this delivery's products. Customer, amounts and payment boxes as before.
+- **Trip sheet margins** (loading and driver sheet): `@page { margin: 10mm 14mm }` instead of 7 mm, which most printers cut off at the sides. The loading sheet's on-screen fit uses the printable 269 × 189 mm, so it still prints on one page.
+- **Long bills, two to a sheet** (two copies per A5, or two bills per A4): a bill too long for its half was cut off (its totals lost), and could push the cut line onto another page. `FitBills` (components/print/fit-copies.tsx) measures each sheet in the preview: copies first shrink their text as before (down to 7 pt); a sheet that still does not fit is marked `data-long` and prints its bills one after the other on full pages, at the normal size, each copy starting on a new page, margins repeated on every page (`box-decoration-break: clone`). The preview shows a note on such a sheet. Short bills print side by side as before. Checked by printing to PDF: 15 lines stay on one sheet; 40 and 60 lines flow over pages with the totals at the end.
+- **Bill totals**: "This bill" is bigger (1.3×, bold); previous, total due and minimum payment are smaller (0.85×), on the full and the compact bill.
+
 ## Bulk orders (sheet entry) — done
 
 - **Orders → Bulk orders** (`/orders/bulk`, also in the side menu under Counter sale, no Alt number): the order booker's whole list at once, one warehouse per sheet. Customers down (suggestions from the database as you type: name, shop, phone or area; only the warehouse's customers and those without an area; a customer already on the sheet is not offered again), products across (short name, else code; rate under it), dozens in the cells (whole or half).
