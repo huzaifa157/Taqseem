@@ -198,18 +198,20 @@ describe("counter sale", () => {
     expect(d.work.day.orders).toBe(0);
   });
 
-  it("sells at a changed rate", async () => {
-    // 2 dz at 180, no discount.
+  it("sells with the customer's own discount, saved for their next sale", async () => {
+    // 2 dz at the fixed 228 less the customer's 48 = 180 / dz.
     const r = await createCounterSale(
       t.as("STAFF"),
-      sale("2", { lines: [{ productId: t.chips.id, quantity: "2", rate: "180" }] }),
+      sale("2", { lines: [{ productId: t.chips.id, quantity: "2", discount: "48" }] }),
     );
     const bill = await t.ctx.db.bill.findFirstOrThrow({ where: { salesOrderId: r.id } });
     expect(bill.netAmount.toFixed(2)).toBe("360.00");
+    const saved = await t.ctx.db.customerProductDiscount.findFirstOrThrow({
+      where: { productId: t.chips.id },
+    });
+    expect(saved.discountPerDozen.toFixed(2)).toBe("48.00");
     const report = await dailyReport(t.ctx, new Date(`${DAY}T00:00:00.000Z`));
-    expect(report.specialRates.map((s) => [s.counter, s.difference.toFixed(2)])).toEqual([
-      [true, "-96.00"], // (180 − 228) × 2
-    ]);
+    expect(report.discountChanges.map((c) => [c.before, c.after])).toEqual([[null, "48.00"]]);
   });
 
   it("creates a walk-in customer from name and phone, with no area", async () => {

@@ -311,14 +311,14 @@ describe("dispatch", () => {
   });
 });
 
-describe("changed rate through delivery", () => {
-  it("returns re-price at the changed rate, and the daily report lists the line", async () => {
+describe("customer's discount through delivery", () => {
+  it("returns re-price at the customer's discount, and the daily report lists the change", async () => {
     const a = await book(t.ali.id, [[t.chips.id, "10"]]);
     await updateSalesOrder(t.staff, a.id, {
       customerId: t.ali.id,
       orderDate: "2026-10-24",
       deliveryDate: DAY,
-      lines: [{ productId: t.chips.id, quantity: "10", rate: "150", rateNote: "clearance" }],
+      lines: [{ productId: t.chips.id, quantity: "10", discount: "78" }],
     });
     const tr = await trip([a.id]);
     await dispatchTrip(t.staff, { id: tr.id });
@@ -326,16 +326,17 @@ describe("changed rate through delivery", () => {
       orderId: a.id,
       lines: [{ productId: t.chips.id, returned: "2", damaged: "" }],
     });
-    // Kept 8 dz × 150.
+    // Kept 8 dz × (228 − 78).
     const bill = await t.ctx.db.bill.findFirstOrThrow({ where: { salesOrderId: a.id } });
-    expect(bill.netAmount.toFixed(2)).toBe("1200.00");
+    const chips = await t.ctx.db.product.findUniqueOrThrow({ where: { id: t.chips.id } });
+    expect(bill.netAmount.toFixed(2)).toBe(chips.saleRate.sub(78).mul(8).toFixed(2));
 
     const r = await dailyReport(t.ctx, new Date(`${DAY}T00:00:00.000Z`));
-    const chips = await t.ctx.db.product.findUniqueOrThrow({ where: { id: t.chips.id } });
-    expect(
-      r.specialRates.map((s) => [s.number, s.rate.toFixed(2), s.standardRate.toFixed(2), s.note]),
-    ).toEqual([[bill.number, "150.00", chips.saleRate.toFixed(2), "clearance"]]);
-    expect(r.issues.some((i) => i.href === "#special-rates")).toBe(true);
+    expect(r.specialRates).toEqual([]);
+    expect(r.discountChanges.map((c) => [c.customerName, c.after, c.orderNumber])).toEqual([
+      ["Ali", "78.00", a.number],
+    ]);
+    expect(r.issues.some((i) => i.href === "#discount-changes")).toBe(true);
   });
 });
 

@@ -42,21 +42,18 @@ function orderInput(formData: FormData) {
       !key.startsWith("$ACTION") &&
       key !== "productId" &&
       key !== "quantity" &&
-      key !== "rate" &&
-      key !== "rateNote"
+      key !== "discount"
     )
       fields[key] = value;
   }
   const ids = formData.getAll("productId").map(String);
   const quantities = formData.getAll("quantity").map(String);
-  // One rate and note per line (blank = the product's rate).
-  const rates = formData.getAll("rate").map(String);
-  const notes = formData.getAll("rateNote").map(String);
+  // One discount per line (blank = the product's discount and slabs).
+  const discounts = formData.getAll("discount").map(String);
   const lines = ids.map((productId, i) => ({
     productId,
     quantity: quantities[i] ?? "",
-    rate: rates[i] ?? "",
-    rateNote: notes[i] ?? "",
+    discount: discounts[i] ?? "",
   }));
   return { ...fields, lines };
 }

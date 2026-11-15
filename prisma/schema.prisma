@@ -302,6 +302,7 @@ model Tenant {
   expenses             Expense[]
   ledgerEntries        LedgerEntry[]
   customerReturns      CustomerReturn[]
+  customerDiscounts    CustomerProductDiscount[]
 }
 
 /// A login. SUPER_ADMIN users are platform-level and have no tenant; everyone else has exactly one.
@@ -482,6 +483,7 @@ model Product {
   stockAdjustments   StockAdjustment[]
   salesOrderLines    SalesOrderLine[]
   customerReturns    CustomerReturn[]
+  customerDiscounts  CustomerProductDiscount[]
 
   @@unique([tenantId, id])
   @@unique([tenantId, requestId])
@@ -607,6 +609,7 @@ model Customer {
   payments      CustomerPayment[]
   oldBills      CustomerOldBill[]
   returns       CustomerReturn[]
+  discounts     CustomerProductDiscount[]
   ledgerEntries LedgerEntry[]
 
   @@unique([tenantId, id])
@@ -1174,6 +1177,9 @@ model SalesOrderLine {
   standardRate     Decimal?     @db.Decimal(14, 2)
   /// Why the rate was changed (optional).
   rateNote         String?
+  /// The customer's own discount per dozen was used (discountType AMOUNT_PER_UNIT), in place of
+  /// the product's discount and slabs. Rates are fixed; only discounts differ per customer.
+  customerDiscount Boolean      @default(false)
   discountType     DiscountType @default(NONE)
   discountValue    Decimal      @default(0) @db.Decimal(14, 2)
   grossAmount      Decimal      @db.Decimal(14, 2)
@@ -1441,4 +1447,27 @@ model LedgerEntry {
   @@index([tenantId, partyType, companyId, entryDate])
   @@index([tenantId, partyType, staffId, entryDate])
   @@index([tenantId, referenceType, referenceId])
+}
+
+/// A customer's own discount on one product, in PKR per dozen (price unit), used in place of the
+/// product's discount and quantity slabs on their orders and counter sales. Set or changed from an
+/// order: typing a discount on a line saves it here, clearing it removes it. Rates stay the
+/// product's. Every change is in the audit log.
+model CustomerProductDiscount {
+  id               String   @id @default(cuid())
+  tenantId         String
+  customerId       String
+  productId        String
+  discountPerDozen Decimal  @db.Decimal(14, 2)
+  updatedById      String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  customer Customer @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: Restrict)
+  product  Product  @relation(fields: [tenantId, productId], references: [tenantId, id], onDelete: Restrict)
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, customerId, productId])
+  @@index([tenantId, productId])
 }

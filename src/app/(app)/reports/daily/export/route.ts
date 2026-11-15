@@ -90,6 +90,21 @@ export async function GET(request: Request) {
           ]),
         ]
       : []),
+    ...(r.discountChanges.length
+      ? [
+          blank,
+          [xBold("Customer discounts changed")],
+          ["Customer", "Product", "Before / dz", "Now / dz", "On bill", "By"].map(xBold),
+          ...r.discountChanges.map((c) => [
+            { value: c.customerName },
+            { value: c.product },
+            c.before ? xMoney(c.before) : { value: "none" },
+            c.after ? xMoney(c.after) : { value: "removed" },
+            c.orderNumber ? { value: c.orderNumber } : null,
+            { value: c.by ?? "" },
+          ]),
+        ]
+      : []),
     blank,
     [xBold("Orders")],
     ["Order", "Customer", "Status", "Bill"].map(xBold),

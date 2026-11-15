@@ -36,38 +36,56 @@ export type PricedLine = {
   discountAmount: Decimal;
   taxAmount: Decimal;
   netAmount: Decimal;
-  /** The product's normal rate, set only when the rate was changed for this order. */
-  standardRate?: Decimal;
+  /** The customer's own discount was used (in place of the product's discount and slabs). */
+  customerDiscount?: boolean;
 };
 
 /**
- * Prices a line at a rate typed on the order (a lower or higher rate for this customer): that rate
- * is the final price per dozen, with no company discount or slab. A blank rate, or the product's
- * own rate, prices the line normally.
+ * A customer's discount as typed: Rs per dozen, from 0 up to the rate. Blank = none (the product's
+ * own discount and slabs apply). Returns null for blank, or an error message.
  */
-export function priceLineAt(
+export function readCustomerDiscount(
+  value: string | null | undefined,
+  saleRate: DecimalValue,
+): { discount: Decimal | null; error?: string } {
+  const text = (value ?? "").trim().replace(/,/g, "");
+  if (text === "") return { discount: null };
+  if (!/^\d+(\.\d{1,2})?$/.test(text))
+    return { discount: null, error: "Discount: a number of rupees per dozen, e.g. 25" };
+  const discount = D(text);
+  if (discount.gt(D(saleRate)))
+    return { discount: null, error: "Discount: cannot be more than the rate" };
+  return { discount };
+}
+
+/**
+ * Prices a line for a customer. Rates are fixed (the product's sale rate); a customer's own
+ * discount per dozen, when there is one, is used in place of the product's discount and slabs.
+ * Without one, the line is priced normally.
+ */
+export function priceLineFor(
   product: PricedProduct,
   quantity: number,
-  rate: DecimalValue | null | undefined,
+  customerDiscount: DecimalValue | null | undefined,
 ): PricedLine {
-  if (rate === null || rate === undefined || rate === "" || D(rate).eq(D(product.saleRate)))
+  if (customerDiscount === null || customerDiscount === undefined || customerDiscount === "")
     return priceLine(product, quantity);
   const amounts = calculateLineAmounts({
     quantity,
     baseUnitsPerPriceUnit: PACKETS_PER_DOZEN,
-    rate: D(rate),
-    discountType: "NONE",
-    discountValue: 0,
+    rate: product.saleRate,
+    discountType: "AMOUNT_PER_UNIT",
+    discountValue: customerDiscount,
   });
   return {
     productId: product.id,
     companyId: product.companyId,
     quantity,
-    rate: D(rate),
-    discountType: "NONE",
-    discountValue: ZERO,
+    rate: D(product.saleRate),
+    discountType: "AMOUNT_PER_UNIT",
+    discountValue: D(customerDiscount),
     ...amounts,
-    standardRate: D(product.saleRate),
+    customerDiscount: true,
   };
 }
 

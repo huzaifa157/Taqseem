@@ -18,6 +18,8 @@ import type { ServiceCtx } from "../master/common";
 const D = (v: Prisma.Decimal | number | string) => new Prisma.Decimal(v);
 const ZERO = D(0);
 const DAY_MS = 86_400_000;
+/** Business days are Pakistan days (UTC+5, no daylight saving): audit times are compared so. */
+const PK_OFFSET_MS = 5 * 3_600_000;
 
 type SnapshotLine = {
   productId: string;
@@ -256,8 +258,11 @@ export async function dailyReport(ctx: ServiceCtx, date: Date) {
     )
     .sort((a, b) => a.number - b.number);
 
+  const discountChanges = await discountChangesOn(ctx, date);
+
   const issues = dayIssues({
     specialRates,
+    discountChanges: discountChanges.length,
     date,
     stillOut: deliveries.stillOut,
     orders,
@@ -275,6 +280,7 @@ export async function dailyReport(ctx: ServiceCtx, date: Date) {
     issues,
     deliveries,
     specialRates,
+    discountChanges,
     /** Counter sales billed on the day (collected at the warehouse). */
     counter: { sales: counterOrders.length, billed: sum(counterOrders, (o) => o.bill?.netAmount) },
     productsSold,
@@ -433,6 +439,77 @@ async function moneyFor(ctx: ServiceCtx, date: Date, next: Date) {
   };
 }
 
+/**
+ * Customers' own discounts set, changed or removed on the day (from orders and counter sales), from
+ * the audit log: who, which product, from what to what, and on which order.
+ */
+/** An amount from the audit log ("48") as money text ("48.00"), or null. */
+const amount = (v: string | undefined) => (v === undefined ? null : D(v).toFixed(2));
+
+async function discountChangesOn(ctx: ServiceCtx, date: Date) {
+  const from = new Date(date.getTime() - PK_OFFSET_MS);
+  const rows = await ctx.db.auditLog.findMany({
+    where: {
+      entityType: "CustomerProductDiscount",
+      createdAt: { gte: from, lt: new Date(from.getTime() + DAY_MS) },
+    },
+    orderBy: { createdAt: "asc" },
+    select: { action: true, userId: true, oldValue: true, newValue: true, createdAt: true },
+  });
+  if (rows.length === 0) return [];
+  type Value = {
+    customerId?: string;
+    productId?: string;
+    discountPerDozen?: string;
+    orderId?: string;
+  };
+  const parsed = rows.map((r) => ({
+    ...r,
+    old: (r.oldValue ?? null) as Value | null,
+    now: (r.newValue ?? null) as Value | null,
+  }));
+  const ids = (f: (v: Value) => string | undefined) =>
+    [
+      ...new Set(parsed.flatMap((r) => [r.old, r.now].filter((v) => v !== null).map((v) => f(v!)))),
+    ].filter((v): v is string => Boolean(v));
+  const [customers, products, orders, users] = await Promise.all([
+    ctx.db.customer.findMany({
+      where: { id: { in: ids((v) => v.customerId) } },
+      select: { id: true, name: true },
+    }),
+    ctx.db.product.findMany({
+      where: { id: { in: ids((v) => v.productId) } },
+      select: { id: true, code: true, name: true },
+    }),
+    ctx.db.salesOrder.findMany({
+      where: { id: { in: ids((v) => v.orderId) } },
+      select: { id: true, number: true },
+    }),
+    ctx.db.user.findMany({
+      where: { id: { in: [...new Set(parsed.map((r) => r.userId).filter((u) => u !== null))] } },
+      select: { id: true, name: true },
+    }),
+  ]);
+  const name = new Map(customers.map((c) => [c.id, c.name]));
+  const product = new Map(products.map((p) => [p.id, p]));
+  const order = new Map(orders.map((o) => [o.id, o.number]));
+  const user = new Map(users.map((u) => [u.id, u.name]));
+  return parsed.map((r) => {
+    const v = r.now ?? r.old ?? {};
+    const p = v.productId ? product.get(v.productId) : undefined;
+    return {
+      at: r.createdAt,
+      customerName: (v.customerId && name.get(v.customerId)) || "—",
+      product: p ? `${p.code} ${p.name}` : "—",
+      before: amount(r.old?.discountPerDozen),
+      after: amount(r.now?.discountPerDozen),
+      orderId: r.now?.orderId ?? null,
+      orderNumber: r.now?.orderId ? (order.get(r.now.orderId) ?? null) : null,
+      by: r.userId ? (user.get(r.userId) ?? null) : null,
+    };
+  });
+}
+
 export type DailyReport = Awaited<ReturnType<typeof dailyReport>>;
 
 export type DayIssue = {
@@ -454,6 +531,7 @@ const names = (list: string[], max = 3) =>
  */
 function dayIssues(d: {
   specialRates: { difference: Prisma.Decimal; number: number }[];
+  discountChanges: number;
   date: Date;
   stillOut: number;
   orders: {
@@ -490,6 +568,12 @@ function dayIssues(d: {
       "#special-rates",
     );
   }
+  if (d.discountChanges)
+    add(
+      "warning",
+      `${d.discountChanges} customer discount${d.discountChanges === 1 ? " was" : "s were"} set or changed. See "Customer discounts changed".`,
+      "#discount-changes",
+    );
   if (d.money?.bounced.count)
     add(
       "problem",

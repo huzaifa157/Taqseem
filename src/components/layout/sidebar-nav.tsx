@@ -24,42 +24,49 @@ export function NavList({
   visibleHrefs: readonly string[];
   pathname?: string;
 }) {
+  const items = navItems.filter((item) => visibleHrefs.includes(item.href));
+  // The most specific match is the active one (/orders/counter is Counter sale, not Orders).
+  const activeHref =
+    pathname === undefined
+      ? undefined
+      : items
+          .filter((item) => pathname === item.href || pathname.startsWith(`${item.href}/`))
+          .sort((a, b) => b.href.length - a.href.length)[0]?.href;
+  let numbered = 0;
   return (
     <nav aria-label="Main" className="flex min-h-0 flex-col gap-0.5 overflow-y-auto p-2">
-      {navItems
-        .filter((item) => visibleHrefs.includes(item.href))
-        .map((item, index) => {
-          // Alt+1 … Alt+9, Alt+0 open the first ten sections (components/layout/keyboard-shortcuts).
-          const key = index < 9 ? String(index + 1) : index === 9 ? "0" : null;
-          const active =
-            pathname !== undefined &&
-            (pathname === item.href || pathname.startsWith(`${item.href}/`));
-          const Icon = item.icon;
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              aria-current={active ? "page" : undefined}
-              aria-keyshortcuts={key ? `Alt+${key}` : undefined}
-              data-nav-key={key ?? undefined}
-              title={key ? `${item.title} (Alt+${key})` : item.title}
-              className={cn(
-                "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-sidebar-ring flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium outline-none group-data-[collapsed=true]/sidebar:justify-center group-data-[collapsed=true]/sidebar:px-0 focus-visible:ring-2 max-md:justify-center max-md:px-0",
-                active && "bg-sidebar-accent text-sidebar-accent-foreground",
-              )}
-            >
-              <Icon className="size-4 shrink-0" aria-hidden />
-              <span className="truncate group-data-[collapsed=true]/sidebar:sr-only max-md:sr-only">
-                {item.title}
-              </span>
-              {key ? (
-                <Kbd className="ml-auto group-data-[collapsed=true]/sidebar:hidden max-md:hidden">
-                  Alt+{key}
-                </Kbd>
-              ) : null}
-            </Link>
-          );
-        })}
+      {items.map((item) => {
+        // Alt+1 … Alt+9, Alt+0 open the first ten numbered sections (keyboard-shortcuts.tsx).
+        const index = item.shortcut === false ? null : numbered++;
+        const key =
+          index === null ? null : index < 9 ? String(index + 1) : index === 9 ? "0" : null;
+        const active = item.href === activeHref;
+        const Icon = item.icon;
+        return (
+          <Link
+            key={item.href}
+            href={item.href}
+            aria-current={active ? "page" : undefined}
+            aria-keyshortcuts={key ? `Alt+${key}` : undefined}
+            data-nav-key={key ?? undefined}
+            title={key ? `${item.title} (Alt+${key})` : item.title}
+            className={cn(
+              "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-sidebar-ring flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium outline-none group-data-[collapsed=true]/sidebar:justify-center group-data-[collapsed=true]/sidebar:px-0 focus-visible:ring-2 max-md:justify-center max-md:px-0",
+              active && "bg-sidebar-accent text-sidebar-accent-foreground",
+            )}
+          >
+            <Icon className="size-4 shrink-0" aria-hidden />
+            <span className="truncate group-data-[collapsed=true]/sidebar:sr-only max-md:sr-only">
+              {item.title}
+            </span>
+            {key ? (
+              <Kbd className="ml-auto group-data-[collapsed=true]/sidebar:hidden max-md:hidden">
+                Alt+{key}
+              </Kbd>
+            ) : null}
+          </Link>
+        );
+      })}
     </nav>
   );
 }

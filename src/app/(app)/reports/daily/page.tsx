@@ -99,6 +99,7 @@ async function Report({ searchParams }: PageProps<"/reports/daily">) {
         <KeyNumbers r={r} />
         <Deliveries r={r} />
         <SpecialRates r={r} />
+        <DiscountChanges r={r} />
         <ProductsSold r={r} />
         {r.money ? <Money money={r.money} profit={r.profit} /> : null}
         {r.money ? <Pending pending={r.money.pending} /> : null}
@@ -293,6 +294,46 @@ function Deliveries({ r }: { r: DailyReport }) {
 }
 
 /** Bills of the day with a rate changed on the order, line by line. Shown only when there are any. */
+/** Customers' own discounts set, changed or removed on the day. Shown only when there are any. */
+function DiscountChanges({ r }: { r: DailyReport }) {
+  if (r.discountChanges.length === 0) return null;
+  return (
+    <Section title="Customer discounts changed" id="discount-changes">
+      <table className="w-full border-collapse">
+        <thead>
+          <tr>
+            <th className={th}>Customer</th>
+            <th className={th}>Product</th>
+            <th className={`${th} ${num}`}>Before / dz</th>
+            <th className={`${th} ${num}`}>Now / dz</th>
+            <th className={th}>On bill · by</th>
+          </tr>
+        </thead>
+        <tbody>
+          {r.discountChanges.map((c, i) => (
+            <tr key={i}>
+              <td className={td}>{c.customerName}</td>
+              <td className={td}>{c.product}</td>
+              <td className={`${td} ${num}`}>{c.before ? formatMoney(c.before) : "none"}</td>
+              <td className={`${td} ${num}`}>{c.after ? formatMoney(c.after) : "removed"}</td>
+              <td className={td}>
+                {c.orderId ? (
+                  <Link href={`/orders/${c.orderId}`} className="print:no-underline">
+                    #{c.orderNumber}
+                  </Link>
+                ) : (
+                  "—"
+                )}
+                {c.by ? ` · ${c.by}` : ""}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Section>
+  );
+}
+
 function SpecialRates({ r }: { r: DailyReport }) {
   if (r.specialRates.length === 0) return null;
   return (

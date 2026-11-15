@@ -9,6 +9,7 @@ import {
   type LucideIcon,
   Receipt,
   Settings,
+  ShoppingBag,
   ShoppingCart,
   Truck,
   Users,
@@ -23,10 +24,19 @@ export type NavItem = {
   icon: LucideIcon;
   /** Shown only to roles with this permission (the page checks it again on the server). */
   permission?: Permission;
+  /** false: no Alt+number, so the sections after it keep the shortcuts people already know. */
+  shortcut?: false;
 };
 
 export const navItems: NavItem[] = [
   { title: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
+  {
+    title: "Counter sale",
+    href: "/orders/counter",
+    icon: ShoppingBag,
+    permission: "operations.manage",
+    shortcut: false,
+  },
   { title: "Orders", href: "/orders", icon: ShoppingCart },
   { title: "Delivery", href: "/delivery", icon: Truck },
   { title: "Purchases", href: "/purchases", icon: PackagePlus },
