@@ -14,11 +14,20 @@ const nextConfig: NextConfig = {
   // pull downloads or old installers into the package. Never list .next or .next-package here:
   // the build's own server chunks live there, and the package then misses them (ChunkLoadError).
   // Keyed by route ("/**") and the instrumentation entry, never "*": Next.js also applies a "*" list
-  // to its own server files, unanchored, so "dist/**" dropped node_modules/next/dist and the site
-  // crashed on Linux (Vercel: "Cannot find module 'next/dist/server/node-environment'").
+  // to its own server files, matching anywhere in a path, so "dist/**" would hit node_modules/next/dist.
   outputFileTracingExcludes: {
     "/**": TRACE_EXCLUDES,
     instrumentation: TRACE_EXCLUDES,
+  },
+  // Vercel's launcher loads next/dist/server/node-environment before the server, but Next 16.4's
+  // minimal server trace leaves that file out, so every function crashed at start ("Cannot find
+  // module 'next/dist/server/node-environment'"). Ship it, and what it loads, with every route.
+  // The real pnpm path: the launcher resolves it from inside node_modules/.pnpm/next@*/.
+  outputFileTracingIncludes: {
+    "/**": [
+      "./node_modules/.pnpm/next@*/node_modules/next/dist/server/node-environment*.js",
+      "./node_modules/.pnpm/next@*/node_modules/next/dist/server/node-environment-extensions/*.js",
+    ],
   },
   cacheComponents: true,
   partialPrefetching: true,
