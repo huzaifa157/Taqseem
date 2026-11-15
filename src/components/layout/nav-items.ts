@@ -47,6 +47,7 @@ export const navItems: NavItem[] = [
     icon: Sheet,
     permission: "operations.manage",
     shortcut: false,
+    letter: "B",
   },
   { title: "Orders", href: "/orders", icon: ShoppingCart },
   { title: "Delivery", href: "/delivery", icon: Truck },
