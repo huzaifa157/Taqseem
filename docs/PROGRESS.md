@@ -2,6 +2,15 @@
 
 Running log of what has been built, decisions taken, and open items. Newest first.
 
+## Vercel deployment fix — done
+
+- On Vercel every request failed at start: `Cannot find module 'next/dist/server/node-environment'`. Vercel's launcher loads that file before the server, but Next 16.4's minimal server trace (`.next/next-minimal-server.js.nft.json`) leaves it out (only its helpers are in).
+- `next.config.ts` now adds it, and the files it loads, to every route through `outputFileTracingIncludes`, at the real pnpm path (`node_modules/.pnpm/next@*/node_modules/next/...`), which is where the launcher resolves it from. Checked: all 104 route traces carry it.
+- Also (PR #45): the tracing excludes are keyed `"/**"` and `instrumentation` instead of `"*"`, because Next applies a `"*"` list to its own server files and matches anywhere in a path (`dist/**` would hit `next/dist`). That alone did not fix the crash.
+- Windows setup file not affected (standalone output, its own launcher).
+- **Vercel setup:** `DATABASE_URL` (Neon pooled string) and `AUTH_SECRET` as environment variables; `pnpm db:deploy` with the direct string for each release with database updates. Cloud sync and backups are for the Windows install only.
+- **Open:** remove the include once a Next.js release puts `node-environment.js` back in the minimal trace.
+
 ## Fixed rates, discount per customer per product; Counter sale in the menu — done
 
 - **Rates are fixed** (the product's sale rate) on orders and counter sales; the rate box on order lines is gone. In its place, **Discount / dz**: the customer's own discount on that product, in PKR per dozen. It **replaces** the product's discount and quantity slabs for that customer (0 = no discount at all); blank = the product's discount and slabs as before.
