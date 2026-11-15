@@ -106,7 +106,7 @@ beforeEach(async () => {
 });
 
 const order = (
-  lines: { productId: string; quantity: string; rate?: string; rateNote?: string }[],
+  lines: { productId: string; quantity: string; discount?: string }[],
   extra: object = {},
 ) => ({
   customerId: t.customer.id,
@@ -257,12 +257,23 @@ describe("new customer typed on the order", () => {
   });
 });
 
-describe("changed rate on an order", () => {
-  it("staff may change a line's rate; it has no discount, survives edits and is a hint next time", async () => {
+describe("customer's own discount", () => {
+  const chipsDiscount = async () =>
+    (await orderEntryContext(t.ctx, t.customer.id)).products.find((p) => p.id === t.chips.id)!
+      .customerDiscount;
+  const audits = () =>
+    t.ctx.db.auditLog.findMany({
+      where: { entityType: "CustomerProductDiscount" },
+      orderBy: { createdAt: "asc" },
+      select: { action: true },
+    });
+
+  it("keeps the fixed rate, replaces the product's discount, and is saved for the customer", async () => {
+    // Chips 228 / dz with 4 off (8 from 25 dz); the customer gets 20 off.
     const r = await createSalesOrder(
       t.staff,
       order([
-        { productId: t.chips.id, quantity: "5", rate: "200", rateNote: "old customer" },
+        { productId: t.chips.id, quantity: "5", discount: "20" },
         { productId: t.nimko.id, quantity: "2" },
       ]),
     );
@@ -270,41 +281,107 @@ describe("changed rate on an order", () => {
     const chips = full.lines.find((l) => l.productId === t.chips.id)!;
     expect([
       chips.rate.toFixed(2),
-      chips.standardRate?.toFixed(2),
       chips.discountType,
+      chips.discountValue.toFixed(2),
       chips.netAmount.toFixed(2),
-      chips.rateNote,
-    ]).toEqual(["200.00", "228.00", "NONE", "1000.00", "old customer"]);
-    const nimko = full.lines.find((l) => l.productId === t.nimko.id)!;
-    expect(nimko.standardRate).toBeNull();
-    expect(full.bill!.netAmount.toFixed(2)).toBe("1460.00"); // 1000 + 460
+      chips.customerDiscount,
+      chips.standardRate,
+    ]).toEqual(["228.00", "AMOUNT_PER_UNIT", "20.00", "1040.00", true, null]);
+    expect(full.lines.find((l) => l.productId === t.nimko.id)!.customerDiscount).toBe(false);
+    expect(full.bill!.netAmount.toFixed(2)).toBe("1500.00"); // 1040 + 460
 
-    // Editing keeps the rate it is sent with; a blank rate goes back to normal pricing.
-    await updateSalesOrder(
-      t.staff,
-      r.id,
-      order([{ productId: t.chips.id, quantity: "6", rate: "200", rateNote: "old customer" }]),
-    );
-    const edited = await getSalesOrder(t.ctx, r.id);
-    expect(edited.bill!.netAmount.toFixed(2)).toBe("1200.00");
-    expect(edited.lines[0]!.standardRate?.toFixed(2)).toBe("228.00");
-
-    // Next order: the last changed rate is offered as a hint; the normal rate still applies.
+    // Saved for the customer: the next order starts with it (the nimko has none).
+    expect(await chipsDiscount()).toBe("20.00");
     const entry = await orderEntryContext(t.ctx, t.customer.id);
-    const hint = entry.products.find((p) => p.id === t.chips.id)!.lastSpecialRate;
-    expect(hint?.rate).toBe("200.00");
-    expect(entry.products.find((p) => p.id === t.nimko.id)!.lastSpecialRate).toBeNull();
-    const next = await createSalesOrder(t.staff, order([{ productId: t.chips.id, quantity: "1" }]));
-    expect((await getSalesOrder(t.ctx, next.id)).bill!.netAmount.toFixed(2)).toBe("224.00");
+    expect(entry.products.find((p) => p.id === t.nimko.id)!.customerDiscount).toBeNull();
+    expect(await audits()).toEqual([{ action: "CREATE" }]);
 
+    // The same discount again changes nothing; a new one is saved; clearing it removes it.
+    await createSalesOrder(
+      t.staff,
+      order([{ productId: t.chips.id, quantity: "1", discount: "20" }]),
+    );
+    expect(await audits()).toHaveLength(1);
+    await createSalesOrder(
+      t.staff,
+      order([{ productId: t.chips.id, quantity: "1", discount: "25" }]),
+    );
+    expect(await chipsDiscount()).toBe("25.00");
+    const plain = await createSalesOrder(
+      t.staff,
+      order([{ productId: t.chips.id, quantity: "1" }]),
+    );
+    expect((await getSalesOrder(t.ctx, plain.id)).bill!.netAmount.toFixed(2)).toBe("224.00");
+    expect(await chipsDiscount()).toBeNull();
+    expect((await audits()).map((a) => a.action)).toEqual(["CREATE", "UPDATE", "DELETE"]);
+
+    // Orders with a customer's discount can be listed.
     const list = await listSalesOrders(t.ctx, { page: 1, specialRate: true });
-    expect(list.rows.map((o) => o.id)).toEqual([r.id]);
+    expect(list.rows).toHaveLength(3);
   });
 
-  it("refuses a rate of zero", async () => {
+  it("replaces the quantity slab too, and a zero discount means none at all", async () => {
+    const r = await createSalesOrder(
+      t.staff,
+      order([{ productId: t.chips.id, quantity: "25", discount: "0" }]), // the slab would be 8
+    );
+    expect((await getSalesOrder(t.ctx, r.id)).bill!.netAmount.toFixed(2)).toBe("5700.00"); // 25 × 228
+    expect(await chipsDiscount()).toBe("0.00");
+  });
+
+  it("editing an older order does not undo a newer change, unless its discount is changed", async () => {
+    const older = await createSalesOrder(
+      t.staff,
+      order([{ productId: t.chips.id, quantity: "1", discount: "20" }]),
+    );
+    await createSalesOrder(
+      t.staff,
+      order([{ productId: t.chips.id, quantity: "1", discount: "30" }]),
+    );
+    // Only the quantity changes on the older order: the customer keeps 30.
+    await updateSalesOrder(
+      t.staff,
+      older.id,
+      order([{ productId: t.chips.id, quantity: "2", discount: "20" }]),
+    );
+    expect(await chipsDiscount()).toBe("30.00");
+    // Its discount changed: that is the customer's now.
+    await updateSalesOrder(
+      t.staff,
+      older.id,
+      order([{ productId: t.chips.id, quantity: "2", discount: "15" }]),
+    );
+    expect(await chipsDiscount()).toBe("15.00");
+  });
+
+  it("an older order with a changed rate is re-priced at the fixed rate when edited", async () => {
+    const r = await createSalesOrder(t.staff, order([{ productId: t.chips.id, quantity: "5" }]));
+    // As saved before discounts per customer: a changed rate of 200 with no discount.
+    await t.ctx.db.salesOrderLine.updateMany({
+      where: { salesOrderId: r.id },
+      data: {
+        rate: "200",
+        standardRate: "228",
+        rateNote: "old",
+        discountType: "NONE",
+        discountValue: "0",
+      },
+    });
+    expect((await getSalesOrder(t.ctx, r.id)).lines[0]!.standardRate?.toFixed(2)).toBe("228.00");
+    await updateSalesOrder(t.staff, r.id, order([{ productId: t.chips.id, quantity: "5" }]));
+    const line = (await getSalesOrder(t.ctx, r.id)).lines[0]!;
+    expect([line.rate.toFixed(2), line.standardRate, line.netAmount.toFixed(2)]).toEqual([
+      "228.00",
+      null,
+      "1120.00", // 5 × (228 − 4)
+    ]);
+  });
+
+  it("refuses a discount above the rate", async () => {
     await expect(
-      createSalesOrder(t.staff, order([{ productId: t.chips.id, quantity: "1", rate: "0" }])),
-    ).rejects.toThrow(/more than zero/);
+      createSalesOrder(t.staff, order([{ productId: t.chips.id, quantity: "1", discount: "229" }])),
+    ).rejects.toThrow(/cannot be more than the rate/);
+    expect(await chipsDiscount()).toBeNull();
   });
 });
 
@@ -421,22 +498,6 @@ describe("order entry context", () => {
     expect(c.products.map((p) => p.code)).toEqual(["CB01", "GC01"]);
     expect(c.products[0]).toMatchObject({ available: 336, tiers: [{ minQuantity: 300 }] });
     expect(c.lastOrder?.lines).toEqual([{ productId: t.chips.id, quantity: 24 }]);
-  });
-
-  it("remembers the rate typed for the customer last time, until an order goes back to normal", async () => {
-    const chipsRate = async () =>
-      (await orderEntryContext(t.ctx, t.customer.id)).products.find((p) => p.id === t.chips.id)!
-        .lastSpecialRate?.rate ?? null;
-    expect(await chipsRate()).toBeNull();
-    // A typed rate: the next order starts with it.
-    await createSalesOrder(
-      t.staff,
-      order([{ productId: t.chips.id, quantity: "1", rate: "200", rateNote: "old customer" }]),
-    );
-    expect(await chipsRate()).toBe("200.00");
-    // The next order at the normal rate: the normal rate again.
-    await createSalesOrder(t.staff, order([{ productId: t.chips.id, quantity: "1" }]));
-    expect(await chipsRate()).toBeNull();
   });
 });
 

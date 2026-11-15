@@ -2,6 +2,17 @@
 
 Running log of what has been built, decisions taken, and open items. Newest first.
 
+## Fixed rates, discount per customer per product; Counter sale in the menu — done
+
+- **Rates are fixed** (the product's sale rate) on orders and counter sales; the rate box on order lines is gone. In its place, **Discount / dz**: the customer's own discount on that product, in PKR per dozen. It **replaces** the product's discount and quantity slabs for that customer (0 = no discount at all); blank = the product's discount and slabs as before.
+- **Saved per customer** in the new `CustomerProductDiscount` table (`services/sales/customer-discounts.ts`): a discount typed on a line is saved when the order or counter sale is saved; clearing it removes it; the next order starts with it. Only real changes are written (an edit of an older order changes the saved discount only if that line's discount was changed). Every change is in the audit log.
+- Order lines get `customerDiscount` (true when the customer's discount was used). Shown as "Customer's" on the order page; the order list filter "Discount" finds them (and old changed-rate orders).
+- **Customer page**: "Discounts for this customer" (rate, normal discount, theirs, what they pay).
+- **Daily report**: "Customer discounts changed" (before → now, bill, who) from the audit log, with a line at the top; also in the Excel export.
+- **Older data is not changed**: posted bills, revisions and lines that had a changed rate keep it (`standardRate`, `rateNote`) and still show as "Special rate"; old days' "Rates changed on bills" still works. No saved discounts were made from old rates (by choice: start fresh). Editing an old open order with a changed rate re-prices it at the fixed rate.
+- **Counter sale** is in the side menu under Dashboard, without an Alt number so the other sections keep Alt+1 … Alt+0; the menu highlights the most specific match.
+- Open: saved discounts can be seen on the customer page but are changed only from orders; no per-customer percent discounts.
+
 ## Customer export (to move customers to another Taqseem) — done
 
 - **Customers → Export** downloads the customers the list shows (same search, area, type and status filters) as Excel, in the customer import's own columns plus **Warehouse** (the area's warehouse). No balances: money is not moved between installations. Owners only (`masterData.manage`).

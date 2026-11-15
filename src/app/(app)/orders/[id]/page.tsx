@@ -158,6 +158,11 @@ export default async function OrderPage({ params, searchParams }: PageProps<"/or
                 {l.discountAmount.gt(0)
                   ? `${formatDiscount(l)} (−${formatMoney(l.discountAmount)})`
                   : "—"}
+                {l.customerDiscount ? (
+                  <Badge variant="secondary" className="ml-1" title="This customer's own discount">
+                    Customer&apos;s
+                  </Badge>
+                ) : null}
               </Td>
               <Td className="text-right tabular-nums">{formatMoney(l.netAmount)}</Td>
             </tr>

@@ -62,9 +62,9 @@ export default async function EditOrderPage({ params }: PageProps<"/orders/[id]/
           lines: order.lines.map((l) => ({
             productId: l.productId,
             qty: quantityText(l.quantity),
-            ...(l.standardRate
-              ? { rate: l.rate.toFixed(2), rateNote: l.rateNote ?? undefined }
-              : {}),
+            // The customer's discount this order has (blank: the product's own discount applied).
+            // A rate changed on an older order is not kept: rates are fixed now.
+            discount: l.customerDiscount ? l.discountValue.toFixed(2) : "",
           })),
         }}
       />

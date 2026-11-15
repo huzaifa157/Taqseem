@@ -48,6 +48,7 @@ export const TENANT_MODELS = [
   "SalesOrder",
   "SalesOrderLine",
   "CustomerReturn",
+  "CustomerProductDiscount",
   "Bill",
   "BillRevision",
   "Cheque",

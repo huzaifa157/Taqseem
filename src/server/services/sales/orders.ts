@@ -2,7 +2,6 @@ import "server-only";
 
 import { Prisma } from "@/generated/prisma/client";
 import type { SalesOrderStatus } from "@/generated/prisma/enums";
-import { formatDate } from "@/lib/dates";
 import { formatMoney } from "@/lib/format";
 import type { DiscountType } from "@/lib/pricing";
 import {
@@ -10,8 +9,9 @@ import {
   checkCredit,
   type CreditCheck,
   isOpenOrder,
-  priceLineAt,
   type PricedLine,
+  priceLineFor,
+  readCustomerDiscount,
 } from "@/lib/sales";
 import { customerSchema, recordIdSchema } from "@/lib/validation/master";
 import { salesOrderSchema, type SalesOrderInput } from "@/lib/validation/sales";
@@ -25,10 +25,13 @@ import { PAGE_SIZE, paged, type ServiceCtx } from "../master/common";
 import { createCustomerTx } from "../master/customers";
 import { found, nextDocumentNumber } from "../posting";
 import type { DateRange } from "../purchasing/filters";
+import { type DiscountChange, saveDiscountChanges, savedDiscounts } from "./customer-discounts";
 import { customerPending, openOrdersTotal, stockPositions } from "./positions";
 
 // Sales orders (SPEC §6). Booking an order, in one transaction:
-//  - prices every line from the product (sale rate, company discount or the slab reached);
+//  - prices every line from the product: its fixed sale rate, and the customer's own discount for
+//    it when there is one, otherwise the company discount or the slab reached;
+//  - saves a discount typed (or cleared) on a line as the customer's own for that product;
 //  - checks the customer's credit limit (pending + other open orders + this order);
 //  - creates the order and its bill (one bill per order, any number of companies) and a bill
 //    revision, so every version of the bill is kept.
@@ -63,17 +66,18 @@ async function loadProducts(tx: TenantTx, warehouseId: string, productIds: strin
   return byId;
 }
 
-/** An order line as priced, with the reason when its rate was changed. */
-type OrderLine = PricedLine & { rateNote?: string | null };
+type OrderLine = PricedLine;
 
-/** Prices each line: the product's rate and discount, or the rate typed for this order. */
+/** Prices each line: the product's fixed rate, with the customer's discount typed on the line. */
 function priceLines(
   products: Awaited<ReturnType<typeof loadProducts>>,
   input: Pick<SalesOrderInput, "lines">,
 ): OrderLine[] {
   return input.lines.map((line) => {
     const p = products.get(line.productId)!;
-    const priced = priceLineAt(
+    const { discount, error } = readCustomerDiscount(line.discount, p.saleRate.toString());
+    if (error) throw new ServiceError(`${p.name}: ${error}`);
+    return priceLineFor(
       {
         id: p.id,
         companyId: p.companyId,
@@ -87,11 +91,14 @@ function priceLines(
         })),
       },
       line.quantity,
-      line.rate,
+      discount,
     );
-    return { ...priced, rateNote: priced.standardRate ? line.rateNote : null };
   });
 }
+
+/** The customer's discount on each line (null = the product's own discount applied). */
+const lineDiscount = (l: { customerDiscount?: boolean; discountValue: { toString(): string } }) =>
+  l.customerDiscount ? money(l.discountValue) : null;
 
 /** The warehouse comes from the customer's area; customers without an area must name one. */
 async function orderWarehouse(
@@ -135,7 +142,7 @@ export async function writeBillRevision(
         companyId: l.companyId,
         quantity: l.quantity,
         rate: l.rate.toFixed(2),
-        ...(l.standardRate ? { standardRate: l.standardRate.toFixed(2) } : {}),
+        ...(l.customerDiscount ? { customerDiscount: true } : {}),
         discountType: l.discountType,
         discountValue: l.discountValue.toFixed(2),
         grossAmount: l.grossAmount.toFixed(2),
@@ -166,8 +173,7 @@ const lineRows = (ctx: ServiceCtx, lines: OrderLine[]) =>
     discountAmount: money(l.discountAmount),
     taxAmount: money(l.taxAmount),
     netAmount: money(l.netAmount),
-    standardRate: l.standardRate ? money(l.standardRate) : null,
-    rateNote: l.rateNote ?? null,
+    customerDiscount: l.customerDiscount ?? false,
   }));
 
 /** Credit decision: allowed by the owner, waiting for the owner, or (owner, not ticked) refused. */
@@ -299,9 +305,7 @@ export async function bookOrder(
         productId: l.productId,
         quantity: l.quantity,
         netAmount: l.netAmount,
-        ...(l.standardRate
-          ? { rate: l.rate, standardRate: l.standardRate, rateNote: l.rateNote }
-          : {}),
+        ...(l.customerDiscount ? { customerDiscount: l.discountValue } : {}),
       })),
       total: total.netAmount,
       companies: [...byCompany.keys()],
@@ -311,8 +315,36 @@ export async function bookOrder(
     },
     requestId: data.requestId,
   });
+  // A discount typed (or cleared) on a line becomes the customer's own for that product.
+  const saved = await savedDiscounts(
+    tx,
+    customer.id,
+    lines.map((l) => l.productId),
+  );
+  const discountChanges = await saveDiscountChanges(
+    tx,
+    ctx,
+    customer.id,
+    lines.map((l) => ({
+      productId: l.productId,
+      before: saved.get(l.productId) ?? null,
+      after: lineDiscount(l),
+    })),
+    order.id,
+  );
   const names = new Map([...products.values()].map((p) => [p.id, p.name]));
-  return { order, bill, customer, warehouseId, lines, total, credit, decision, names };
+  return {
+    order,
+    bill,
+    customer,
+    warehouseId,
+    lines,
+    total,
+    credit,
+    decision,
+    names,
+    discountChanges,
+  };
 }
 
 export async function createSalesOrder(ctx: ServiceCtx, input: unknown): Promise<OrderResult> {
@@ -432,6 +464,23 @@ export async function updateSalesOrder(
       });
       const decision = creditDecision(ctx, credit, data.allowOverCredit);
 
+      // Discounts changed on this edit (compared with the order as it was, or for a product added
+      // now, with the customer's saved one) become the customer's own.
+      const beforeLine = new Map(before.lines.map((l) => [l.productId, lineDiscount(l)]));
+      const saved = await savedDiscounts(
+        tx,
+        before.customerId,
+        lines.filter((l) => !beforeLine.has(l.productId)).map((l) => l.productId),
+      );
+      const changes: DiscountChange[] = lines.map((l) => ({
+        productId: l.productId,
+        before: beforeLine.has(l.productId)
+          ? beforeLine.get(l.productId)!
+          : (saved.get(l.productId) ?? null),
+        after: lineDiscount(l),
+      }));
+      await saveDiscountChanges(tx, ctx, before.customerId, changes, id);
+
       await tx.salesOrderLine.deleteMany({ where: { salesOrderId: id } });
       await tx.salesOrderLine.createMany({
         data: lineRows(ctx, lines).map((l) => ({ ...l, salesOrderId: id })),
@@ -481,7 +530,7 @@ export async function updateSalesOrder(
           lines: lines.map((l) => ({
             productId: l.productId,
             quantity: l.quantity,
-            ...(l.standardRate ? { rate: l.rate, standardRate: l.standardRate } : {}),
+            ...(l.customerDiscount ? { customerDiscount: l.discountValue } : {}),
           })),
           total: total.netAmount,
         },
@@ -561,7 +610,7 @@ export type OrderFilters = {
   needsApproval?: boolean;
   /** DELIVERY or COUNTER. */
   fulfilment?: string;
-  /** Only orders with a rate changed on a line. */
+  /** Only orders with a customer's own discount on a line (or, before, a changed rate). */
   specialRate?: boolean;
   page: number;
 } & DateRange;
@@ -591,7 +640,13 @@ export async function listSalesOrders(ctx: ServiceCtx, f: OrderFilters) {
       : {}),
     ...(f.areaId ? { customer: { areaId: f.areaId } } : {}),
     ...(f.needsApproval ? { needsCreditApproval: true } : {}),
-    ...(f.specialRate ? { lines: { some: { standardRate: { not: null } } } } : {}),
+    ...(f.specialRate
+      ? {
+          lines: {
+            some: { OR: [{ standardRate: { not: null } }, { customerDiscount: true }] },
+          },
+        }
+      : {}),
     ...(f.fulfilment === "DELIVERY" || f.fulfilment === "COUNTER"
       ? { fulfilment: f.fulfilment }
       : {}),
@@ -743,8 +798,8 @@ export async function orderEntryContext(
     tiers: { minQuantity: number; discountType: DiscountType; discountValue: string }[];
     available: number;
     onHand: number;
-    /** The rate this customer last got when it was changed for them (a hint only). */
-    lastSpecialRate: { rate: string; date: string } | null;
+    /** This customer's own discount per dozen on the product (null = the product's discount). */
+    customerDiscount: string | null;
   }[] = [];
   if (warehouseId) {
     const rows = await ctx.db.product.findMany({
@@ -752,31 +807,10 @@ export async function orderEntryContext(
       include: { discountTiers: { orderBy: { minQuantity: "asc" } } },
       orderBy: { code: "asc" },
     });
-    const [positions, specials] = await Promise.all([
+    const [positions, discounts] = await Promise.all([
       stockPositions(ctx.db, warehouseId, undefined, opts.excludeOrderId),
-      // The customer's most recent line of each product: its rate is used again when it was a
-      // typed (special) rate; if that last order went back to the normal rate, so does this one.
-      ctx.db.salesOrderLine.findMany({
-        where: {
-          salesOrder: {
-            customerId,
-            status: { not: "CANCELLED" },
-            ...(opts.excludeOrderId ? { id: { not: opts.excludeOrderId } } : {}),
-          },
-        },
-        orderBy: [{ salesOrder: { orderDate: "desc" } }, { salesOrder: { number: "desc" } }],
-        distinct: ["productId"],
-        select: {
-          productId: true,
-          rate: true,
-          standardRate: true,
-          salesOrder: { select: { orderDate: true } },
-        },
-      }),
+      customer ? savedDiscounts(ctx.db, customer.id) : new Map<string, Prisma.Decimal>(),
     ]);
-    const special = new Map(
-      specials.filter((s) => s.standardRate !== null).map((s) => [s.productId, s]),
-    );
     products = rows.map((p) => ({
       id: p.id,
       code: p.code,
@@ -793,12 +827,7 @@ export async function orderEntryContext(
       })),
       available: positions.get(p.id)?.available ?? 0,
       onHand: positions.get(p.id)?.onHand ?? 0,
-      lastSpecialRate: special.has(p.id)
-        ? {
-            rate: special.get(p.id)!.rate.toFixed(2),
-            date: formatDate(special.get(p.id)!.salesOrder.orderDate),
-          }
-        : null,
+      customerDiscount: discounts.get(p.id)?.toFixed(2) ?? null,
     }));
   }
 

@@ -7,7 +7,8 @@ import {
   isOpenOrder,
   minimumPayment,
   priceLine,
-  priceLineAt,
+  priceLineFor,
+  readCustomerDiscount,
 } from "./sales";
 
 const chips = {
@@ -49,23 +50,37 @@ describe("priceLine", () => {
   });
 });
 
-describe("priceLineAt", () => {
-  it("prices at the typed rate with no discount, and keeps the normal rate", () => {
-    const line = priceLineAt(chips, 42, "200"); // 3.5 dz at 200
+describe("priceLineFor (a customer's own discount)", () => {
+  it("keeps the fixed rate and uses the customer's discount in place of the product's and slabs", () => {
+    const line = priceLineFor(chips, 300, "20"); // 25 dz: the slab (8) would apply, the customer's 20 does
     expect([
       line.rate.toFixed(2),
+      line.discountValue.toFixed(2),
       line.discountAmount.toFixed(2),
       line.netAmount.toFixed(2),
-    ]).toEqual(["200.00", "0.00", "700.00"]);
-    expect(line.discountType).toBe("NONE");
-    expect(line.standardRate?.toFixed(2)).toBe("228.00");
+    ]).toEqual(["228.00", "20.00", "500.00", "5200.00"]);
+    expect(line).toMatchObject({ discountType: "AMOUNT_PER_UNIT", customerDiscount: true });
   });
 
-  it("a blank rate, or the product's own rate, prices normally", () => {
-    for (const rate of [null, undefined, "", "228", "228.00"]) {
-      const line = priceLineAt(chips, 42, rate);
-      expect([line.netAmount.toFixed(2), line.standardRate]).toEqual(["784.00", undefined]);
+  it("a zero discount is the customer's own too (no product discount)", () => {
+    const line = priceLineFor(chips, 42, "0");
+    expect([line.netAmount.toFixed(2), line.customerDiscount]).toEqual(["798.00", true]);
+  });
+
+  it("no customer discount prices normally", () => {
+    for (const discount of [null, undefined, ""]) {
+      const line = priceLineFor(chips, 42, discount);
+      expect([line.netAmount.toFixed(2), line.customerDiscount]).toEqual(["784.00", undefined]);
     }
+  });
+});
+
+describe("readCustomerDiscount", () => {
+  it("reads rupees per dozen, blank as none, and refuses more than the rate", () => {
+    expect(readCustomerDiscount(" 1,25.5 ", "228").discount?.toFixed(2)).toBe("125.50");
+    expect(readCustomerDiscount("", "228")).toEqual({ discount: null });
+    expect(readCustomerDiscount("229", "228").error).toBe("Discount: cannot be more than the rate");
+    expect(readCustomerDiscount("-5", "228").error).toMatch(/a number of rupees/);
   });
 });
 

@@ -15,7 +15,13 @@ import { NativeSelect } from "@/components/ui/native-select";
 import { type ActionState, fieldError, idleState } from "@/lib/action-state";
 import { formatMoney } from "@/lib/format";
 import { localPhone } from "@/lib/phone";
-import { billTotals, checkCredit, priceLineAt, type PricedLine } from "@/lib/sales";
+import {
+  billTotals,
+  checkCredit,
+  type PricedLine,
+  priceLineFor,
+  readCustomerDiscount,
+} from "@/lib/sales";
 import { formatDozens, PACKETS_PER_HALF_DOZEN, parseQuantity, quantityText } from "@/lib/units";
 import { orderEntryContextAction } from "@/server/sales-actions";
 import type { OrderEntryContext } from "@/server/services/sales/orders";
@@ -29,8 +35,11 @@ type CustomerOption = {
   phone: string | null;
   area: { name: string } | null;
 };
-/** `rate`: a rate per dozen typed for this order (blank = the product's rate and discount). */
-type Line = { productId: string; qty: string; rate?: string; rateNote?: string };
+/**
+ * `discount`: the customer's own discount per dozen on this product (blank = the product's
+ * discount and slabs). Starts at their saved discount; saved for them when the order is saved.
+ */
+type Line = { productId: string; qty: string; discount?: string };
 type Product = OrderEntryContext["products"][number];
 
 const SOURCES = [
@@ -38,12 +47,6 @@ const SOURCES = [
   { value: "WHATSAPP", label: "WhatsApp" },
   { value: "BOOKER_APP", label: "Booker app" },
 ];
-
-/** A typed rate in rupees (up to 2 decimals, more than zero), or null. */
-function typedRate(rate: string | undefined): string | null {
-  const v = rate?.trim() ?? "";
-  return /^\d+(\.\d{1,2})?$/.test(v) && Number(v) > 0 ? v : null;
-}
 
 /** "3.5" or "3dz 6pk" → 42 packets; null unless a positive number of whole or half dozens. */
 function halfDozens(qty: string): number | null {
@@ -54,9 +57,10 @@ function halfDozens(qty: string): number | null {
 /**
  * Keyboard-first order entry:
  *  1. type the customer (name, shop, phone or area) → Enter;
- *  2. type a product code or name → Enter → type dozens → Enter, or Tab Tab (past the rate), back
- *     to the product box, which sits under the last product;
- *  3. Ctrl+Enter books the order. In a dozens box: Alt+R the rate, Ctrl+Delete removes the line.
+ *  2. type a product code or name → Enter → type dozens → Enter, or Tab Tab (past the discount),
+ *     back to the product box, which sits under the last product;
+ *  3. Ctrl+Enter books the order. In a dozens box: Alt+R the customer's discount, Ctrl+Delete
+ *     removes the line. Rates are fixed; a discount typed on a line is saved for the customer.
  * Prices, discounts, available stock and the credit limit update as you type; the server
  * recalculates everything when saving.
  */
@@ -159,7 +163,14 @@ export function OrderEntry({
     const product = productById.get(line.productId);
     const qty = halfDozens(line.qty);
     if (product && qty)
-      priced.push({ ...priceLineAt(product, qty, typedRate(line.rate)), product });
+      priced.push({
+        ...priceLineFor(
+          product,
+          qty,
+          readCustomerDiscount(line.discount, product.saleRate).discount,
+        ),
+        product,
+      });
   }
   const { total, byCompany } = billTotals(priced);
   const paidNow = paidFull
@@ -193,8 +204,8 @@ export function OrderEntry({
       return;
     }
     pendingFocus.current = p.id;
-    // The rate typed for this customer last time is used again (it can still be changed).
-    setLines((ls) => [...ls, { productId: p.id, qty: "", rate: p.lastSpecialRate?.rate }]);
+    // The customer's own discount on this product is used again (it can still be changed).
+    setLines((ls) => [...ls, { productId: p.id, qty: "", discount: p.customerDiscount ?? "" }]);
   };
 
   const repeatLastOrder = () => {
@@ -205,7 +216,7 @@ export function OrderEntry({
         .map((l) => ({
           productId: l.productId,
           qty: quantityText(l.quantity),
-          rate: productById.get(l.productId)?.lastSpecialRate?.rate,
+          discount: productById.get(l.productId)?.customerDiscount ?? "",
         })),
     );
   };
@@ -251,7 +262,7 @@ export function OrderEntry({
             productSearch.current?.focus();
           } else if (e.altKey && e.code === "KeyR") {
             e.preventDefault();
-            document.getElementById(`rate-${productId}`)?.focus();
+            document.getElementById(`discount-${productId}`)?.focus();
           }
         }
       }}
@@ -420,7 +431,7 @@ export function OrderEntry({
                 <Th className="text-right">Available</Th>
                 <Th className="w-28">Dozens</Th>
                 <Th className="text-right">Rate / dz</Th>
-                <Th className="text-right">Discount</Th>
+                <Th className="text-right">Discount / dz</Th>
                 <Th className="text-right">Amount</Th>
                 <Th>
                   <span className="sr-only">Remove</span>
@@ -484,23 +495,21 @@ export function OrderEntry({
                       />
                       <FieldError id={`qty-${product.id}-error`} message={error} />
                     </Td>
+                    <Td className="text-right tabular-nums">{formatMoney(product.saleRate)}</Td>
                     <Td className="text-right">
-                      <RateCell
+                      <DiscountCell
                         line={line}
                         product={product}
-                        special={Boolean(p?.standardRate)}
-                        error={fieldError(state, `lines.${i}.rate`)}
-                        onChange={(change) =>
+                        priced={p}
+                        error={fieldError(state, `lines.${i}.discount`)}
+                        onChange={(discount) =>
                           setLines((ls) =>
                             ls.map((l) =>
-                              l.productId === line.productId ? { ...l, ...change } : l,
+                              l.productId === line.productId ? { ...l, discount } : l,
                             ),
                           )
                         }
                       />
-                    </Td>
-                    <Td className="text-right tabular-nums">
-                      {p && p.discountAmount.gt(0) ? `−${formatMoney(p.discountAmount)}` : "—"}
                     </Td>
                     <Td className="text-right font-medium tabular-nums">
                       {p ? formatMoney(p.netAmount) : ""}
@@ -543,7 +552,7 @@ export function OrderEntry({
               </tr>
             </tfoot>
           </DataTable>
-          {/* Under the last product, so the next product is always two Tabs (dozens, rate) away. */}
+          {/* Under the last product, so the next product is always two Tabs (dozens, discount) away. */}
           <div className="flex flex-wrap items-end gap-3">
             <div className="min-w-72 flex-1">
               <Combobox
@@ -591,7 +600,7 @@ export function OrderEntry({
               <Kbd>Enter</Kbd> or <Kbd>Tab</Kbd> <Kbd>Tab</Kbd> next product
             </span>
             <span>
-              <Kbd>Alt+R</Kbd> change rate
+              <Kbd>Alt+R</Kbd> customer&apos;s discount
             </span>
             <span>
               <Kbd>Ctrl+Delete</Kbd> remove line
@@ -686,83 +695,78 @@ export function OrderEntry({
   );
 }
 
+/** The product's own discount as a hint: "4", "5%" or "none". */
+function normalDiscount(product: Product) {
+  if (product.discountType === "NONE" || Number(product.discountValue) === 0) return "none";
+  return product.discountType === "PERCENT"
+    ? `${Number(product.discountValue)}%`
+    : String(Number(product.discountValue));
+}
+
 /**
- * Rate / dz of one line: blank uses the product's rate (shown as the placeholder). A typed rate
- * is the final price for this order, with no discount, and asks for a reason. The customer's last
- * special rate for the product is offered as a hint only.
+ * Discount / dz of one line: the customer's own discount on the product (rates are fixed). It
+ * starts at their saved discount; blank uses the product's discount and slabs (the placeholder).
+ * What will happen to the saved discount when the order is saved is shown under it.
  */
-function RateCell({
+function DiscountCell({
   line,
   product,
-  special,
+  priced,
   error,
   onChange,
 }: {
   line: Line;
   product: Product;
-  special: boolean;
+  priced?: PricedLine;
   error?: string;
-  onChange: (change: Partial<Line>) => void;
+  onChange: (discount: string) => void;
 }) {
-  const id = `rate-${product.id}`;
-  const last = product.lastSpecialRate;
-  const asLastTime = Boolean(last && line.rate && Number(line.rate) === Number(last.rate));
+  const id = `discount-${product.id}`;
+  const typed = readCustomerDiscount(line.discount, product.saleRate);
+  const saved = product.customerDiscount;
+  const message = error ?? typed.error;
+  let note: React.ReactNode = null;
+  if (typed.discount && saved !== null && typed.discount.eq(saved))
+    note = <span>Customer&apos;s discount</span>;
+  else if (typed.discount && saved !== null)
+    note = <span>Saved {formatMoney(saved)} → changes</span>;
+  else if (typed.discount) note = <span>New for this customer: saved</span>;
+  else if (saved !== null)
+    note = (
+      <button
+        type="button"
+        className="underline underline-offset-2"
+        onClick={() => onChange(saved)}
+        title="Use the customer's saved discount"
+        tabIndex={-1}
+      >
+        Removes saved {formatMoney(saved)}
+      </button>
+    );
   return (
     <div className="ml-auto w-32 space-y-1 text-left">
       <label htmlFor={id} className="sr-only">
-        Rate per dozen for {product.name}
+        Discount per dozen for {product.name}
       </label>
       <Input
         id={id}
-        name="rate"
+        name="discount"
         inputMode="decimal"
         autoComplete="off"
         className="h-8 text-right tabular-nums"
-        placeholder={product.saleRate}
+        placeholder={normalDiscount(product)}
+        title="This customer's discount per dozen. Blank: the product's discount and slabs."
         aria-keyshortcuts="Alt+R"
-        value={line.rate ?? ""}
-        onChange={(e) => onChange({ rate: e.target.value })}
-        aria-invalid={error ? true : undefined}
-        aria-describedby={error ? `${id}-error` : undefined}
+        value={line.discount ?? ""}
+        onChange={(e) => onChange(e.target.value)}
+        aria-invalid={message ? true : undefined}
+        aria-describedby={message ? `${id}-error` : undefined}
       />
-      <FieldError id={`${id}-error`} message={error} />
-      {special ? (
-        <>
-          <p className="text-xs">
-            <Badge variant="secondary">Special rate</Badge>{" "}
-            <span className="text-muted-foreground line-through">
-              {formatMoney(product.saleRate)}
-            </span>
-            {asLastTime ? (
-              <span className="text-muted-foreground block">as last time ({last!.date})</span>
-            ) : null}
-          </p>
-          <Input
-            name="rateNote"
-            aria-label={`Reason for the rate of ${product.name}`}
-            placeholder="Reason (optional)"
-            maxLength={100}
-            // The customer's remembered rate needs no new reason: keep Tab Tab to the next product.
-            tabIndex={asLastTime ? -1 : undefined}
-            className="h-7 text-xs"
-            value={line.rateNote ?? ""}
-            onChange={(e) => onChange({ rateNote: e.target.value })}
-          />
-        </>
-      ) : (
-        <input type="hidden" name="rateNote" value="" />
-      )}
-      {last && !line.rate ? (
-        <button
-          type="button"
-          className="text-muted-foreground text-xs underline underline-offset-2"
-          onClick={() => onChange({ rate: last.rate })}
-          title="Use this rate on this order"
-          tabIndex={-1}
-        >
-          Last time {formatMoney(last.rate)} ({last.date})
-        </button>
-      ) : null}
+      <FieldError id={`${id}-error`} message={message} />
+      <p className="text-muted-foreground text-right text-xs tabular-nums">
+        {priced && priced.discountAmount.gt(0) ? `−${formatMoney(priced.discountAmount)}` : null}
+        {note ? <span className="block">{note}</span> : null}
+      </p>
     </div>
   );
 }

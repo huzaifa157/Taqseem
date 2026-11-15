@@ -299,7 +299,7 @@ const SHORTCUTS: [string, string][] = [
   ["Tab", "Next box. In an order: after the dozens and the rate, the next product"],
   ["Enter", "In an order: after the dozens, the next product"],
   ["Ctrl+Delete", "In an order: remove the line you are in"],
-  ["Alt+R", "In an order: change the rate of the line you are in"],
+  ["Alt+R", "In an order: the customer's discount on the line you are in"],
   ["Alt+L", "In an order: repeat the customer's last order"],
   ["?", "This list"],
 ];

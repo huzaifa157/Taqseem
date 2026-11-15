@@ -90,9 +90,9 @@ export default async function OrdersPage({ searchParams }: PageProps<"/orders">)
           },
           {
             name: "rate",
-            label: "Rate",
+            label: "Discount",
             value: filterParam(sp, "rate"),
-            options: [{ value: "special", label: "Changed rate" }],
+            options: [{ value: "special", label: "Customer discount (or changed rate)" }],
           },
           {
             name: "approval",
