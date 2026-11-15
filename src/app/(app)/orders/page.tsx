@@ -55,6 +55,9 @@ export default async function OrdersPage({ searchParams }: PageProps<"/orders">)
             <LinkButton href="/orders/counter" variant="outline">
               Counter sale
             </LinkButton>
+            <LinkButton href="/orders/bulk" variant="outline">
+              Bulk orders
+            </LinkButton>
             <LinkButton href="/orders/new">New order</LinkButton>
           </>
         }

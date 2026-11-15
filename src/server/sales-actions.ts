@@ -2,12 +2,19 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { ZodError } from "zod";
 
 import type { ActionState } from "@/lib/action-state";
 
 import { runAction } from "./actions";
+import { ForbiddenError } from "./auth/permissions";
 import { requireTenantContext } from "./auth/session";
 import { ServiceError } from "./services/errors";
+import {
+  bookBulkOrders,
+  type BulkRowResult,
+  saveBulkOrderLayout,
+} from "./services/sales/bulk-orders";
 import { createCounterSale } from "./services/sales/counter";
 import {
   approveCreditOverride,
@@ -105,6 +112,41 @@ export async function saveCounterSaleAction(
         ? `/orders/${savedId}/bill?print=1`
         : `/orders/${savedId}?notice=sold`,
   );
+}
+
+/** Expected failures (validation, permission, business rules) as a message; anything else throws. */
+function failure(error: unknown): { error: string } {
+  if (error instanceof ServiceError) return { error: error.message };
+  if (error instanceof ZodError) return { error: error.issues[0]?.message ?? "Check the sheet." };
+  if (error instanceof ForbiddenError) return { error: "You do not have permission to do this." };
+  throw error;
+}
+
+/** Saves the bulk sheet's columns (which products, in which order) for a warehouse. */
+export async function saveBulkOrderLayoutAction(
+  warehouseId: string,
+  productIds: string[],
+): Promise<{ columns: string[] } | { error: string }> {
+  try {
+    const ctx = await requireTenantContext("operations.manage");
+    return { columns: await saveBulkOrderLayout(ctx, { warehouseId, productIds }) };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+/** Books every row of the bulk sheet as its own order; each row gets its own result. */
+export async function bookBulkOrdersAction(
+  input: unknown,
+): Promise<{ results: BulkRowResult[] } | { error: string }> {
+  try {
+    const ctx = await requireTenantContext("operations.manage");
+    const results = await bookBulkOrders(ctx, input);
+    if (results.some((r) => r.ok)) revalidatePath("/orders");
+    return { results };
+  } catch (error) {
+    return failure(error);
+  }
 }
 
 export async function cancelSalesOrderAction(id: string): Promise<ActionState> {
