@@ -38,8 +38,10 @@ export function NavList({
       {items.map((item) => {
         // Alt+1 … Alt+9, Alt+0 open the first ten numbered sections (keyboard-shortcuts.tsx).
         const index = item.shortcut === false ? null : numbered++;
-        const key =
+        const number =
           index === null ? null : index < 9 ? String(index + 1) : index === 9 ? "0" : null;
+        // Alt+letter for a few items without a number (Counter sale: Alt+C).
+        const key = number ?? item.letter ?? null;
         const active = item.href === activeHref;
         const Icon = item.icon;
         return (
@@ -48,7 +50,8 @@ export function NavList({
             href={item.href}
             aria-current={active ? "page" : undefined}
             aria-keyshortcuts={key ? `Alt+${key}` : undefined}
-            data-nav-key={key ?? undefined}
+            data-nav-key={number ?? undefined}
+            data-nav-letter={number ? undefined : (item.letter ?? undefined)}
             title={key ? `${item.title} (Alt+${key})` : item.title}
             className={cn(
               "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-sidebar-ring flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium outline-none group-data-[collapsed=true]/sidebar:justify-center group-data-[collapsed=true]/sidebar:px-0 focus-visible:ring-2 max-md:justify-center max-md:px-0",

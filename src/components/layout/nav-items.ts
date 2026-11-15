@@ -27,6 +27,8 @@ export type NavItem = {
   permission?: Permission;
   /** false: no Alt+number, so the sections after it keep the shortcuts people already know. */
   shortcut?: false;
+  /** Alt+letter instead (for items without a number), e.g. "C" for Counter sale. */
+  letter?: string;
 };
 
 export const navItems: NavItem[] = [
@@ -37,6 +39,7 @@ export const navItems: NavItem[] = [
     icon: ShoppingBag,
     permission: "operations.manage",
     shortcut: false,
+    letter: "C",
   },
   {
     title: "Bulk orders",

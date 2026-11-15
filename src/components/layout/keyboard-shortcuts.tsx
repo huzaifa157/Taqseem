@@ -14,6 +14,7 @@ import { rememberedList } from "./record-pager";
  *                leave or reset, go back to the page above (asks first when a form has unsaved
  *                changes)
  *   Alt+1 … 0    the sections of the side menu, in order
+ *   Alt+C        Counter sale (side menu items without a number have a letter)
  *   Alt+N        the page's main "New …" button
  *   Ctrl+Enter   save the form you are in
  *   just type    on a list: goes into its search box, which filters as you type; on a long page
@@ -150,6 +151,19 @@ export function KeyboardShortcuts() {
           router.push(link.getAttribute("href")!);
         }
         return;
+      }
+
+      // Alt+letter: a side menu item without a number (Alt+C: Counter sale).
+      if (e.altKey && !e.ctrlKey && !e.metaKey && /^Key[A-Z]$/.test(e.code)) {
+        const link = document.querySelector<HTMLAnchorElement>(
+          `nav[aria-label=Main] a[data-nav-letter="${e.code.slice(3)}"]`,
+        );
+        if (link) {
+          e.preventDefault();
+          lastNav.current = Date.now();
+          router.push(link.getAttribute("href")!);
+          return;
+        }
       }
 
       // Alt+N: the page's main "New …" button.
@@ -290,6 +304,7 @@ export function KeyboardShortcuts() {
 const SHORTCUTS: [string, string][] = [
   ["Esc", "Leave the box, or reset a list search; again: back to the page above"],
   ["Alt+1 … Alt+0", "Open a section of the side menu"],
+  ["Alt+C", "Counter sale"],
   ["Alt+N", "New (order, customer, payment …) on the page you are on"],
   ["Ctrl+Enter", "Save the form, book the order"],
   ["/  or  Ctrl+K", "Search everything"],
