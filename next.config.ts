@@ -1,5 +1,8 @@
 import type { NextConfig } from "next";
 
+/** Project folders the server never needs at run time (matched from the project root). */
+const TRACE_EXCLUDES = ["dist/**", ".backups/**", "test/**", "docs/**"];
+
 const nextConfig: NextConfig = {
   // The Windows installer (scripts/windows/package.ps1) ships the self-contained server; normal
   // `next start` (taqseem.bat, development) does not use it.
@@ -10,8 +13,12 @@ const nextConfig: NextConfig = {
   // The cloud sync looks up files at run time (migrations, pg_dump); never let the file tracing
   // pull downloads or old installers into the package. Never list .next or .next-package here:
   // the build's own server chunks live there, and the package then misses them (ChunkLoadError).
+  // Keyed by route ("/**") and the instrumentation entry, never "*": Next.js also applies a "*" list
+  // to its own server files, unanchored, so "dist/**" dropped node_modules/next/dist and the site
+  // crashed on Linux (Vercel: "Cannot find module 'next/dist/server/node-environment'").
   outputFileTracingExcludes: {
-    "*": ["dist/**", ".backups/**", "test/**", "docs/**"],
+    "/**": TRACE_EXCLUDES,
+    instrumentation: TRACE_EXCLUDES,
   },
   cacheComponents: true,
   partialPrefetching: true,
