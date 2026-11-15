@@ -4,9 +4,6 @@ import { join, relative, sep } from "node:path";
 import type { NextConfig } from "next";
 import { PHASE_PRODUCTION_BUILD } from "next/constants";
 
-/** Project folders the server never needs at run time (matched from the project root). */
-const TRACE_EXCLUDES = ["dist/**", ".backups/**", "test/**", "docs/**"];
-
 /**
  * Every Node function on Vercel starts with next/setup-node-env, which loads node-environment,
  * require-hook and node-polyfill-crypto (and about 50 files they load). Next 16.4's Vercel adapter
@@ -48,15 +45,11 @@ export default async function config(phase: string): Promise<NextConfig> {
     ...(process.env.TAQSEEM_STANDALONE
       ? { output: "standalone" as const, distDir: ".next-package" }
       : {}),
-    // The cloud sync looks up files at run time (migrations, pg_dump); never let the file tracing
-    // pull downloads or old installers into the package. Never list .next or .next-package here:
-    // the build's own server chunks live there, and the package then misses them (ChunkLoadError).
-    // Keyed by route ("/**") and the instrumentation entry, never "*": Next.js also applies a "*"
-    // list to its own server files, matching anywhere in a path, so "dist/**" would hit next/dist.
-    outputFileTracingExcludes: {
-      "/**": TRACE_EXCLUDES,
-      instrumentation: TRACE_EXCLUDES,
-    },
+    // No outputFileTracingExcludes: Turbopack matches those patterns anywhere in a path, so
+    // "dist/**" (meant for our installer folder) also dropped node_modules/next/dist on Linux, and
+    // every Vercel function crashed on a missing Next.js file. Windows paths use backslashes, so it
+    // never showed there. The run-time file lookups (cloud sync: migrations, pg_dump) carry
+    // turbopackIgnore, so the tracing does not pull dist/, docs/ or backups in anyway.
     // Only for a production build: `next dev` does not trace files.
     ...(phase === PHASE_PRODUCTION_BUILD
       ? await (async () => {
