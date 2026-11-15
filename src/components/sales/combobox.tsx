@@ -25,6 +25,9 @@ export function Combobox<T>({
   hint,
   onNoMatch,
   noMatchLabel,
+  hideLabel = false,
+  inputClassName,
+  onInputKeyDown,
 }: {
   label: string;
   items: T[];
@@ -42,6 +45,11 @@ export function Combobox<T>({
   /** Offered when nothing matches: Enter or a click calls it with what was typed. */
   onNoMatch?: (query: string) => void;
   noMatchLabel?: (query: string) => string;
+  /** In a table cell: the label is read out but not shown. */
+  hideLabel?: boolean;
+  inputClassName?: string;
+  /** Keys the box does not use itself (e.g. moving between cells of a sheet). */
+  onInputKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>, listOpen: boolean) => void;
 }) {
   const id = useId();
   const [query, setQuery] = useState("");
@@ -69,7 +77,9 @@ export function Combobox<T>({
 
   return (
     <div className="relative space-y-1.5">
-      <Label htmlFor={`${id}-input`}>{label}</Label>
+      <Label htmlFor={`${id}-input`} className={cn(hideLabel && "sr-only")}>
+        {label}
+      </Label>
       <Input
         id={`${id}-input`}
         ref={inputRef}
@@ -80,6 +90,7 @@ export function Combobox<T>({
         aria-activedescendant={showList && results[active] ? `${id}-opt-${active}` : undefined}
         aria-describedby={hint ? `${id}-hint` : undefined}
         autoComplete="off"
+        className={inputClassName}
         autoFocus={autoFocus}
         placeholder={placeholder}
         value={query}
@@ -91,6 +102,8 @@ export function Combobox<T>({
         onFocus={() => setOpen(true)}
         onBlur={() => setTimeout(() => setOpen(false), 150)}
         onKeyDown={(e) => {
+          onInputKeyDown?.(e, showList);
+          if (e.defaultPrevented) return;
           if (e.key === "ArrowDown") {
             e.preventDefault();
             setOpen(true);

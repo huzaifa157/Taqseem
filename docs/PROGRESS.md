@@ -2,6 +2,19 @@
 
 Running log of what has been built, decisions taken, and open items. Newest first.
 
+## Bulk orders (sheet entry) — done
+
+- **Orders → Bulk orders** (`/orders/bulk`, also in the side menu under Counter sale, no Alt number): the order booker's whole list at once, one warehouse per sheet. Customers down (suggestions from the database as you type: name, shop, phone or area; only the warehouse's customers and those without an area; a customer already on the sheet is not offered again), products across (short name, else code; rate under it), dozens in the cells (whole or half).
+- **Columns**: which products the sheet shows and in which order, saved per warehouse for everyone (`BulkOrderLayout`, new table; audited). Never arranged = all products by company. A **Company** filter narrows the columns on screen; quantities in hidden columns still belong to the row ("+ N in other companies").
+- **Live figures**: each row's amount (fixed rate with the customer's own discount, cells with one underlined), and per product the dozens to book against the stock free to sell (red when short). Customer and amount stay pinned while the products scroll across.
+- **Keyboard**: pick the customer with Enter → first product cell; Enter/↓ down, ↑ up, Tab/→ across, Ctrl+Enter books; Backspace on a chosen customer changes it.
+- **Booking** (`services/sales/bulk-orders.ts`, `bookBulkOrders`): each row is booked as an ordinary order through `createSalesOrder` (pricing, credit, audit, shortages exactly as the order screen), one by one; a row's problem (credit limit, another warehouse, the same customer twice, a bad quantity) is reported on that row and the others are booked. Each row has its own `requestId`, so pressing Book again after a dropped connection never books a row twice. Lines carry the customer's saved discount, so booking from the sheet never changes or clears a saved discount. The owner can tick "Allow past the credit limit"; staff rows past the limit wait for approval as usual. At most 100 rows per request (the screen sends 50 at a time).
+- After booking: booked rows lock and show their order number and amount; "Print the N booked bills" opens them together; "Clear booked rows".
+- **Unsaved sheet** is kept in this browser (localStorage, per warehouse); on return it is offered back ("Restore it" / "Discard").
+- Tests: `bulk-orders.int.test.ts` (7). Browser-checked: menu, columns order saved, suggestions, keyboard moves, totals, booking two orders, print link, credit and stock problems per row, restore offer.
+- **Database update**: one new table (`BulkOrderLayout`). Online deployments need `pnpm db:deploy`; the Windows setup applies it, and cloud sync carries it.
+- **Open:** fill a sheet from the last orders of its customers; import a booker's Excel into the sheet.
+
 ## Vercel deployment fix — done
 
 - On Vercel every request failed at start: `Cannot find module 'next/dist/server/node-environment'`, then `'../patch-error-inspect'`. Every Node function starts with `next/setup-node-env`, which loads `node-environment`, `require-hook` and `node-polyfill-crypto` (about 55 files with what they load). Next 16.4's Vercel adapter (`next/dist/build/adapter/build-complete.js`) adds those itself only for webpack builds ("Turbopack traces these itself"), but Turbopack leaves them out of the route traces.

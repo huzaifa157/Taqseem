@@ -303,6 +303,7 @@ model Tenant {
   ledgerEntries        LedgerEntry[]
   customerReturns      CustomerReturn[]
   customerDiscounts    CustomerProductDiscount[]
+  bulkOrderLayouts     BulkOrderLayout[]
 }
 
 /// A login. SUPER_ADMIN users are platform-level and have no tenant; everyone else has exactly one.
@@ -390,6 +391,7 @@ model Warehouse {
   salesOrders      SalesOrder[]
   deliveryTrips    DeliveryTrip[]
   expenses         Expense[]
+  bulkOrderLayout  BulkOrderLayout?
 
   @@unique([tenantId, id])
   @@unique([tenantId, requestId])
@@ -1470,4 +1472,22 @@ model CustomerProductDiscount {
   @@unique([tenantId, id])
   @@unique([tenantId, customerId, productId])
   @@index([tenantId, productId])
+}
+
+/// The bulk order sheet of a warehouse: which products are its columns, in which order. Shared by
+/// everyone in the business; products not listed are hidden (and offered under "Columns").
+model BulkOrderLayout {
+  id          String   @id @default(cuid())
+  tenantId    String
+  warehouseId String
+  productIds  String[]
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  warehouse Warehouse @relation(fields: [tenantId, warehouseId], references: [tenantId, id], onDelete: Restrict)
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, warehouseId])
 }
