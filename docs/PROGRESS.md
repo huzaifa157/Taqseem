@@ -2,6 +2,13 @@
 
 Running log of what has been built, decisions taken, and open items. Newest first.
 
+## Imports in batches (online timeout) — done
+
+- Online, a customer import failed with "Transaction API error … expired transaction" (P2028): the whole import was one transaction (120 s limit), and the Vercel functions ran in Washington (iad1) while the Neon database is in Singapore, so every query crossed the world. Nothing was saved.
+- `commitImport` now saves IMPORT_BATCH (25) rows per transaction (60 s each), new areas first. If a batch fails, the batches before it stay saved and the message says how many rows were imported and to import the same file again; the per-row `requestId` (and per new area, now keyed by its warehouse and name instead of its position) finds what was made, and customers already there are skipped, so nothing is doubled.
+- Test: 60 customers with a new area in three batches, then the same import again adds nothing.
+- **Deployment note:** set the Vercel project's Function Region to the database's region (Singapore, sin1, for ap-southeast-1); every page makes several queries, so this speeds up the whole online site.
+
 ## Print fixes: driver sheet, trip sheet margins, long bills, bill totals — done
 
 - **Driver sheet**: no "Sent dz" column and no products printed. Each stop has 5 empty rows (`RETURN_ROWS`) where the driver writes the product that came back, returned packets and damaged packets: returns can be from an earlier delivery, so the sheet does not list this delivery's products. Customer, amounts and payment boxes as before.

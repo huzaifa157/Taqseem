@@ -185,6 +185,28 @@ describe("customer import", () => {
     expect(await ctx.db.area.count()).toBe(2);
   });
 
+  it("saves a big file in batches, and importing it again adds nothing twice", async () => {
+    const many = [
+      "Name,Type,Phone,Area",
+      ...Array.from(
+        { length: 60 },
+        (_, i) =>
+          `Customer ${i + 1},Retailer,0300-${String(1000000 + i)},${i % 2 ? "Badami Bagh" : "Shahdara Town"}`,
+      ),
+    ].join("\n");
+    const requestId = randomUUID();
+    const result = await commitImport(ctx, "customers", file("m.csv", many), requestId);
+    expect(result).toEqual({ created: 60, updated: 0, existing: 0, skipped: 0, areasCreated: 1 });
+    expect(await ctx.db.customer.count()).toBe(60);
+    expect(await ctx.db.area.count({ where: { name: "Badami Bagh" } })).toBe(1);
+    // A retry of the same import (same request) after a stop: nothing new, nothing doubled.
+    await expect(commitImport(ctx, "customers", file("m.csv", many), requestId)).rejects.toThrow(
+      "nothing new",
+    );
+    expect(await ctx.db.customer.count()).toBe(60);
+    expect(await ctx.db.auditLog.count({ where: { entityType: "Customer" } })).toBe(60);
+  });
+
   it("moves customers to another Taqseem: export there, import here, areas matched or made", async () => {
     const setup = [
       "Name,Shop name,Type,Phone,WhatsApp,Address,Area,Visiting order,Credit limit",

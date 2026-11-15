@@ -144,9 +144,16 @@ export async function previewImport(
   return summarize(kind, file.name, await validate(ctx, kind, file));
 }
 
+/** Rows saved per transaction: small enough to stay quick even far from the database. */
+export const IMPORT_BATCH = 25;
+
 /**
- * Imports the valid rows (rows with errors are skipped) in one transaction. `requestId` makes a
- * retried import harmless: rows already created by it are found again instead of duplicated.
+ * Imports the valid rows (rows with errors are skipped), in batches of IMPORT_BATCH rows, each its
+ * own transaction: one big transaction ran out of time on a slow connection (the online version
+ * far from its database) and saved nothing. If a batch fails, the batches before it stay saved and
+ * the message says so; importing the same file again finishes the job, because `requestId` (per
+ * row, and per new area by its name) finds what was already made instead of making it twice, and
+ * customers already there are skipped anyway.
  */
 export async function commitImport(
   ctx: ServiceCtx,
@@ -165,50 +172,74 @@ export async function commitImport(
 
   let created = 0;
   let updated = 0;
-  await ctx.db.$transaction(
-    async (tx) => {
-      // New areas first, so the customers can be put in them.
-      const areaIds = new Map<string, string>();
-      let n = 0;
-      for (const [key, area] of newAreasOf(valid)) {
-        const made = await createAreaTx(tx, ctx, {
-          warehouseId: area.warehouseId,
-          name: area.name,
-          sortOrder: 0,
-          requestId: `${requestId}:area:${n++}`,
-        });
-        areaIds.set(key, made.id);
-      }
-      for (const row of valid) {
-        const rowRequestId = `${requestId}:${row.line}`;
-        if (kind === "products") {
-          const input = row.input as ProductInput;
-          if (row.existingId) {
-            const result = await updateProductTx(tx, ctx, row.existingId, input);
-            if (result.changed) updated++;
-          } else {
-            await createProductTx(tx, ctx, input, rowRequestId);
-            created++;
+  let done = 0;
+  try {
+    // New areas first, so the customers can be put in them.
+    const areaIds = new Map<string, string>();
+    const newAreas = newAreasOf(valid);
+    if (newAreas.size)
+      await ctx.db.$transaction(
+        async (tx) => {
+          for (const [key, area] of newAreas) {
+            const made = await createAreaTx(tx, ctx, {
+              warehouseId: area.warehouseId,
+              name: area.name,
+              sortOrder: 0,
+              requestId: `${requestId}:area:${key}`,
+            });
+            areaIds.set(key, made.id);
           }
-        } else if (kind === "companies") {
-          await createCompanyTx(tx, ctx, {
-            ...(row.input as CompanyInput),
-            requestId: rowRequestId,
-          });
-          created++;
-        } else if (kind === "areas") {
-          await createAreaTx(tx, ctx, { ...(row.input as AreaInput), requestId: rowRequestId });
-          created++;
-        } else {
-          const input = row.input as CustomerInput;
-          const areaId = row.newArea ? areaIds.get(areaKey(row.newArea)) : input.areaId;
-          await createCustomerTx(tx, ctx, { ...input, areaId: areaId ?? null }, rowRequestId);
-          created++;
-        }
-      }
-    },
-    { timeout: 120_000 },
-  );
+        },
+        { timeout: 60_000 },
+      );
+    for (let i = 0; i < valid.length; i += IMPORT_BATCH) {
+      const batch = valid.slice(i, i + IMPORT_BATCH);
+      const counts = await ctx.db.$transaction(
+        async (tx) => {
+          let made = 0;
+          let changed = 0;
+          for (const row of batch) {
+            const rowRequestId = `${requestId}:${row.line}`;
+            if (kind === "products") {
+              const input = row.input as ProductInput;
+              if (row.existingId) {
+                const result = await updateProductTx(tx, ctx, row.existingId, input);
+                if (result.changed) changed++;
+              } else {
+                await createProductTx(tx, ctx, input, rowRequestId);
+                made++;
+              }
+            } else if (kind === "companies") {
+              await createCompanyTx(tx, ctx, {
+                ...(row.input as CompanyInput),
+                requestId: rowRequestId,
+              });
+              made++;
+            } else if (kind === "areas") {
+              await createAreaTx(tx, ctx, { ...(row.input as AreaInput), requestId: rowRequestId });
+              made++;
+            } else {
+              const input = row.input as CustomerInput;
+              const areaId = row.newArea ? areaIds.get(areaKey(row.newArea)) : input.areaId;
+              await createCustomerTx(tx, ctx, { ...input, areaId: areaId ?? null }, rowRequestId);
+              made++;
+            }
+          }
+          return { made, changed };
+        },
+        { timeout: 60_000 },
+      );
+      created += counts.made;
+      updated += counts.changed;
+      done += batch.length;
+    }
+  } catch (error) {
+    if (done === 0) throw error;
+    const reason = error instanceof ServiceError ? ` (${error.message})` : "";
+    throw new ServiceError(
+      `${done} of ${valid.length} rows were imported, then the import stopped${reason}. Import the same file again to finish: rows already imported are not added twice.`,
+    );
+  }
   return {
     created,
     updated,
