@@ -253,6 +253,8 @@ model Tenant {
   twoCopiesPerA5        Boolean   @default(false)
   /// Short bill layout for small paper (A6, receipt rolls): fewer lines, no company column.
   compactBills          Boolean   @default(false)
+  /// Printed at the foot of every bill page, e.g. the returns policy. Blank: nothing.
+  billNote              String?   @db.VarChar(200)
   timezone              String    @default("Asia/Karachi")
   currency              String    @default("PKR")
   /// Product base unit used for new products (smallest unit; quantities are stored in it).

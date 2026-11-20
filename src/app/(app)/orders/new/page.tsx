@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 
-import { BackLink, PageHeader } from "@/components/layout/page-header";
 import { Notice } from "@/components/master/notice";
 import { OrderEntry } from "@/components/sales/order-entry";
 import { addDays } from "@/server/services/purchasing/calc";
@@ -38,28 +37,32 @@ export default async function NewOrderPage({ searchParams }: PageProps<"/orders/
   const customerId = filterParam(sp, "customerId");
   return (
     <>
-      <BackLink href="/orders">Orders</BackLink>
-      <PageHeader
-        title="New order"
-        description="Usually for tomorrow's delivery, as reported by the company's order booker."
-      />
-      <Notice
-        notice={notice}
-        text={
-          lastOrder
-            ? `Order #${lastOrder.number} for ${lastOrder.customer.name} booked.`
-            : undefined
-        }
-        next={
-          lastOrder
-            ? [
-                { href: `/orders/${lastOrder.id}`, label: "Open it" },
-                { href: `/orders/${lastOrder.id}/bill`, label: "Print its bill" },
-              ]
-            : []
-        }
-      />
       <OrderEntry
+        header={{
+          backHref: "/orders",
+          backLabel: "Orders",
+          title: "New order",
+          description:
+            "Usually for tomorrow's delivery, as reported by the company's order booker.",
+        }}
+        notice={
+          <Notice
+            notice={notice}
+            text={
+              lastOrder
+                ? `Order #${lastOrder.number} for ${lastOrder.customer.name} booked.`
+                : undefined
+            }
+            next={
+              lastOrder
+                ? [
+                    { href: `/orders/${lastOrder.id}`, label: "Open it" },
+                    { href: `/orders/${lastOrder.id}/bill`, label: "Print its bill" },
+                  ]
+                : []
+            }
+          />
+        }
         key={`${String(last ?? "")}:${customerId ?? ""}`}
         action={saveSalesOrderAction.bind(null, null)}
         customers={customers}

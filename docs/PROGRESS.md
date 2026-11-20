@@ -2,6 +2,123 @@
 
 Running log of what has been built, decisions taken, and open items. Newest first.
 
+## Next.js 16.4.6 (security) — done
+
+- `next` and `eslint-config-next` 16.4.3 → 16.4.6: fixes two moderate advisories (GHSA-mfr8-8qww-v76h, GHSA-vc7v-qv4w-wrv8; `'use cache'` leaks across root params, patched in 16.4.5). Lint, typecheck, 356 tests and `pnpm build` pass; the dev server starts without the security notice.
+- Open: `pnpm audit --prod` still reports one high advisory in `effect` (ReDoS in `Schema.TemplateLiteral`, GHSA-7589-6fvf-x4pw), reached only through Prisma's CLI config loader (`@prisma/client` > `prisma` > `@prisma/config`), which runs at build / migrate time, not in the website. Fixed by a Prisma update that pulls `effect` ≥ 3.22.1.
+
+## Bill pages: carried / brought forward, page numbers, bill note — done
+
+Built from the designer's A5 and A4 mockups.
+
+- **Page by page** (one bill per sheet, full layout): `billPagination` (lib/print.ts) works out from the paper height, margin and font size how many lines fit on page 1 and on later pages; `paginateBill` splits the lines, filling pages and keeping room on the last for the totals (never totals alone). Every line is one row of a fixed height (`BILL_ROW_EM`; a long name is cut, full name on hover), so the sums hold. Tested.
+- **Page 1**: compact letterhead (name; address · phone) with **BILL #n** and date · order; **Bill to** (name · shop; address · area · phone) with "Counter sale · Cash" or "Delivery · date". **Later pages**: business name and customer, "BILL #n / date · continued", then **Brought forward from page n**. Every page but the last ends with **Carried forward to page n+1** (dozens, discount, amount so far).
+- **Last page**: totals row (items, dozens, discount, amount); **Account** (previous balance or old balance + previous pending, this bill +, paid now (method) −, **Balance due**, minimum payment when there is one); subtotal, discount and **This bill** boxed.
+- **Footer** on every page: the business's **bill note** on the last page ("Continued on page 2 — totals on the last page" before it) and **Page x of y**.
+- **A4 (wide paper)**: a ✓ box per line to check the goods, and the Company column on bills with several companies (left out on A5 for room).
+- **Bill note**: new tenant column `billNote` (migration `20261121090000_tenant_bill_note`), "Note on bills (optional)" under Settings → Business & printing; the demo seed sets "Returns and claims within one week, against this bill."
+- Two to a sheet and compact bills are unchanged (one block, fitted by FitBills); `billDocuments` now takes the print settings.
+- Checked by printing to PDF: A5 10 pt (15 lines, one page), A5 13 pt (14 + 1 lines over two pages, carried / brought forward, footer at the page bottom), A4 10 pt (one page with ✓ and Company).
+- Open: at 14 pt or more on A5 the table is wider than the page and the browser shrinks the page to fit (complete, but the page has spare room); NTN on the letterhead (the A4 mockup) needs a tax number setting first.
+
+## Bill: no signature lines or amount in words — done
+
+- To keep long bills short, the full bill drops the "Received by (customer)" / "For <business>" signature lines and the amount in words (its helper is gone too); the compact bill drops "Received by". The account block now sits beside the boxed "This bill", and the bill ends with "Thank you for your business."
+
+## Bill redesigned as a standard invoice — done
+
+- `BillDocument` (A5 / A4, black and white, sizes in em): letterhead left and **BILL** with bill no., date and order no. right; a **Bill to** band (name, shop, address, phone) with Sale (Counter / Delivery), delivery date and area; numbered lines (item name with code, company when several, Qty (dz), Rate, Disc., Amount) and a totals row (items, dozens, discount, subtotal); **Amount in words** (`amountInWords`, lakh / crore, paisa; tested); an **Account** block (previous balance or old balance + previous pending, this bill, total due, paid, balance due, minimum payment); **This bill** boxed on the right under subtotal and discount; signature lines "Received by (customer)" and "For <business>", and "Thank you for your business."
+- **Paid and balance due**: `getBillView` adds `paid` (posted payments taken with the order, and their methods) and `order.fulfilment`. A counter sale's bill now shows "Paid (cash) −…" and "Balance due" instead of only the total due. On the full bill only (company slices and the split bills leave it out). The compact bill shows them too.
+- Checked by printing to A5 PDF: a counter sale paid partly by cheque (6,000 + 371 = 6,371; paid 200; balance 6,171) and a delivery order with an old balance.
+- Open: two bills to a sheet (`FitBills`) — the new bill is a little taller, so long bills may move to full pages sooner; check with real bills.
+
+## New customer offered beside partial matches; lines start at half a dozen — done
+
+- **Bug**: typing "ali" listed Ali Ansari, Ali Mughal… but no "+ New customer", because it was only offered when nothing matched. `Combobox` has `isExact`: when none of the items is exactly what was typed, "+ New customer “ali”" is offered under the matches (↓ to it, then Enter, or click). Plain Enter still picks the top match. For customers, exact = the same name (any capitals or spacing) or the same phone (`isSameCustomer`). Other comboboxes are unchanged.
+- **New lines start at 0.5 dz, selected** (`DEFAULT_QTY`): Enter keeps half a dozen and goes to the next product; typing a number replaces it (no Backspace). Same on new and edit order.
+- Browser-checked: "Ali Ansari" typed exactly offers no new customer; "ali" offers it last and it opens the new-customer box with "ali"; lines 0.5 (Enter) and 1 (typed).
+
+## Counter sale: room for lines with a new customer; total qty by the bill total — done
+
+- The new-customer note ("Saved as a retailer… goes to them instead") is no longer a line under the fields; it shows on hover over "New customer".
+- The grid never gets shorter than five rows (`MIN_GRID_HEIGHT` 200 px); below that the page scrolls. At 1366×600 with a new customer it shows seven rows.
+- **Total qty** moved to the right of the totals bar, large, just before **Bill total**; items, discount given and "All shortcuts" stay on the left.
+
+## Counter sale: no "From" box at all; optional area for a walk-in — done
+
+- The counter sale never shows "From": it sells from the customer's area warehouse, else the one remembered on this computer, else the first. (Orders still show it when there are two or more warehouses.) If a second warehouse is ever used for counter sales, a way to pick it there would be needed again.
+- A new walk-in customer has **Area · optional** again ("No area" by default); a chosen area is saved on the customer. The warehouse after each area name shows only when areas are in more than one warehouse.
+- Browser-checked with the demo's two warehouses: no From box; walk-ins saved with an area (Shahdara Town) and without.
+
+## One warehouse: no "From" box; Repeat last order back — done
+
+- With a single active warehouse (the first tenant today) the "From" box is not shown and that warehouse is used for everything, on orders too. With two or more it comes back.
+- The counter sale's top bar has **Repeat last order** (Alt+L) again, where "From" was: Counter sale · Note · Repeat last order · Date.
+- Browser-checked with one active warehouse (the demo's second turned off for the check, then on again): no From box, Repeat filled the customer's last sale, the sale saved.
+
+## Counter sale: no area needed — done
+
+- **Bug**: a counter sale for an existing customer without an area failed with "This customer has no area. Choose the warehouse to deliver from." The screen showed the warehouse (the order-entry context had resolved it from the remembered one), but the hidden `warehouseId` was only sent when the screen thought a choice was still needed, so the server got none. Now it is always sent for a customer without an area (`customerWithoutArea`), and "From" stays a choice for them.
+- The counter's warehouse is never empty: chosen here, else remembered on this computer, else the first warehouse. The counter's new-customer box has no Area field any more (name and optional phone); the area can be set later under Customers. Orders still ask for it (deliveries need the route).
+- The remembered warehouse is read with `useSyncExternalStore` (server value null), so a saved choice no longer risks a hydration mismatch now that "From" is drawn on first render.
+- Browser-checked: counter sales saved for a customer without an area and for a new walk-in; a chosen warehouse survives a reload with no hydration error.
+
+## Counter sale: slimmer header, more lines — done
+
+- Counter sale top bar is now: title, **Note** (a box filling the line), **From**, **Date**. The "← Orders" link is hidden (Esc still goes back through it), the explanation line and the "Repeat last order" button are gone (Alt+L still repeats it). New and edit order keep their top bar.
+- Customer card shorter: "Balance after", the amount, what is left and the limit on one line, then the credit bar, then the figures with "Balances by company" (now a popover) at the end of that line.
+- Grid rows about 33 px (were 41); the shortcut line moved into the totals bar ("All shortcuts"); smaller totals bar and pinned bar.
+- After adding a line the grid scrolls only as far as needed (`focusEntryBox`), so the entry row sits at the bottom edge and the most lines stay in view.
+- Lines in view with 8 on the bill: 1366×768 about 12 rows (was 9); 1366×600: 6 lines plus the entry row (was 3). No page scroll. Fixed a hydration error from the shortcuts popup sitting inside a paragraph.
+
+## Order / counter sale: designed layout — done
+
+Built from the designer's mockup (counter sale; new and edit order share it). Layout only: field names, validation and saving are unchanged.
+
+- **Top bar** (rendered by `OrderEntry`, pages pass `header` and the saved `notice`): back, title, short note; on the right **From** (warehouse: fixed by the customer's or new customer's area, otherwise chosen and remembered), **Repeat last order** (Alt+L) and the date(s) as labelled boxes. Order and edit also show Delivery and Via. `CompactPageHeader` is gone again.
+- **Customer card**: initials badge, name, shop · area, **Change (F2)** (the search comes back; the customer stays until another is picked, "Keep …" cancels). Right side: **balance after this order** large, "still available" or "over the limit", a credit bar (green, amber past 80 %, red past the limit), then pending, other open orders, this order; "Balances by company" opens the split. "+ Add a note" under the customer (open when the order has a note). A new customer is Name, Phone (optional), Area in the card.
+- **Grid**: # / Item (name, code, company) / In stock as a pill (amber under 10 dz, red when none, "Short" badge) / Qty / Unit / Price / Disc / Amount; qty and discount boxes look like text until hovered or focused; the entry row is tinted with a green edge. Footer: items · total qty · discount given, and **BILL TOTAL** large. A shortcut line under it with "All shortcuts".
+- **Pinned bar**: Paid now (Rs box with a **Full** toggle), Cash / Cheque / Online as a segmented choice (radio buttons; cheque and reference boxes appear inline), **Goes on account**, then Cancel, Save & next, Save & print and the green **Save sale** (the total on it on wide screens).
+- New theme tokens: `--brand` (Taqseem green), `--warning`, light and dark.
+- Not taken from the mockup: the next bill number (it is only given when saving, so a preview could be wrong), and Bank / Easypaisa as methods (the app has Cash, Cheque, Online; Online's reference holds the bank or Easypaisa).
+- Browser-checked at 1366×768 and 1366×657 (no page scroll): a counter sale with F2 change of customer, two lines, part payment by cheque and a note saved (cheque 778899, HBL, Rs 200 recorded); a new order booked; its edit page.
+
+## Order / counter sale: bigger bill grid — done
+
+- The grid now **fills** the free space (a fixed height from `fitGridToWindow`, not just a maximum), with empty numbered rows to the bottom like a Busy voucher (`GRID_ROWS` 25; rows past the window scroll). Rows are slimmer (about 33 px).
+- **Paid now** is one compact strip in the pinned bar, on the same line as the buttons (labels read out, placeholders shown; "Paid in full", "On account"). Buttons are "Save & print" and "Save & next" / "Book & next" (full wording on hover).
+- "Repeat last order" moved to the totals bar; the keyboard hints became a **Shortcuts** popup there.
+- Result at 1366×768: 12 grid rows visible (was 7–8); at 1366×657: 9. No page scrolling in either.
+- **Lines per bill**: up to 200 (`orderLinesSchema`), each product once; long bills print over several pages with the totals at the end.
+
+## Order / counter sale: tidier header, grid fitted to the window — done
+
+- **Header** on a 12-column grid so its rows line up. A new customer is a titled box ("New customer · saved as a retailer…", Cancel on the right) with Name, Phone · optional (+92 on hover), Area and Warehouse; the zero balance boxes are not shown for a new customer. A customer without an area gets a Warehouse row with one line of explanation.
+- **Bill grid fitted to the window**: `fitGridToWindow` sets the grid's height after every render and on resize, from where it starts down to the pinned bar, so header, grid, total and bar fit without page scrolling however big the header is; more lines scroll inside the grid with the entry row in view (minimum about three rows; phones scroll the page as before).
+- **One-row lines**: long item names are cut with the full name on hover; the discount note shows only when the saved discount changes (the line's discount amount is on hover; the total discount is in the totals bar). Qty box has a fixed width.
+- **Fix (Combobox)**: leaving the box started a 150 ms close; coming back and typing within it (pick, dozens, Enter, next code quickly) closed the list and Enter did nothing. Focus or typing now cancels that close.
+- Browser-checked at 1366×768 and 1366×657 with a new customer and with 8 lines typed fast: no page scroll in any of the four cases.
+
+## Customers: unique names, phone optional, remembered warehouse — done
+
+- **Customer names are unique** in a business, ignoring capitals and extra spaces ("Ali Traders" = "ali  traders"). Saved names are tidied (trimmed, single spaces). Creating or renaming a customer onto a name in use is refused with the existing name in the message (an inactive customer still holds its name). Migration `20261120090000_customer_name_unique` adds a hand-written unique index on the tenant and the lower-cased, tidied name (like the other hand-written indexes, Prisma does not track or drop it).
+  - **Deploying:** the migration first renames existing duplicates, keeping the oldest name and adding " (2)", " (3)" … to later ones, so it cannot fail on old data. Check the customer list for such names after deploying (the demo seed had two pairs; the seed now picks distinct names).
+- **Import**: a row with the name of an existing customer (another phone), or a name repeated in the file, is an error in the preview; same name and phone is still skipped as already there.
+- **New customer on an order or counter sale**: the phone is optional. The customer is found by phone first, then by name (any capitals), so typing an existing name uses that customer instead of making a second one.
+- **Warehouse remembered**: the warehouse last chosen on the order / counter screen (for a new customer, or one without an area) comes back on this computer until changed (browser storage, key `taqseem.orderWarehouse`).
+- Tests: unique names on create, rename, inactive and at the database; phone-less new customer reused by name; import name clashes. Browser-checked: counter sale with a phone-less customer, the warehouse coming back on the next sale, and a different-capitals name going to the existing customer.
+
+## Order and counter sale screens: voucher layout — done
+
+- Laid out like a desktop accounting voucher (Busy/Tally style) so the bill is the main thing on the screen (`components/sales/order-entry.tsx`, used by counter sale, new order and edit order). Layout only: field names, validation and saving are unchanged.
+- **Header band**: customer, sale date (or order date, delivery date, taken via) and note in one dense band with small labels and inputs. A new customer's phone, name, area and warehouse appear inline in the same band (no separate box), with one line of notes and "Cancel new customer". The customer's balance (pending, other open orders, this order, after this order, credit limit) is one line under it, like "Cur. Bal."; "By company" opens the split.
+- **Bill grid**: numbered S.N. column; Item, Available, Qty, Unit, Price, Disc. / dz, Amount (numbers right-aligned); always 10 rows (lines, the entry row, then empty ones) in its own scroll area with a sticky header and a stronger border. The product search is the entry row under the last line (its list floats over the grid). Totals bar under the grid: total qty on the left, total amount large and bold on the right.
+- **Pinned bottom bar**: Paid now (counter sale), the credit-limit warning, errors and the save / cancel / repeat-last-order buttons stay at the bottom of the window.
+- **Keyboard**: picking the customer goes to the entry row; Enter in a header box goes to the next one and from the last into the grid; Enter in a quantity or discount goes to the entry row; Tab Tab after the dozens reaches the next row.
+- **Page title** on these three pages is one line (`CompactPageHeader`: back link, title, short note cut to the line with the full text on hover).
+- **Customer balance**: the customer on the left, then one small box per figure (label over the amount); "After this order" is highlighted, red with "over by …" past the credit limit.
+- Browser-checked at 1366×768 and 1366×657: header, grid, total, Paid now and the buttons fit without scrolling. Saved a counter sale by keyboard only.
+
 ## Imports in batches (online timeout) — done
 
 - Online, a customer import failed with "Transaction API error … expired transaction" (P2028): the whole import was one transaction (120 s limit), and the Vercel functions ran in Washington (iad1) while the Neon database is in Singapore, so every query crossed the world. Nothing was saved.

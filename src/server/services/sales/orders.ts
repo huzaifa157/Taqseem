@@ -22,7 +22,7 @@ import { assertCan, can } from "../../auth/permissions";
 import type { TenantTx } from "../../db/tenant";
 import { ServiceError } from "../errors";
 import { PAGE_SIZE, paged, type ServiceCtx } from "../master/common";
-import { createCustomerTx } from "../master/customers";
+import { createCustomerTx, customerNameTaken, customerWithName } from "../master/customers";
 import { found, nextDocumentNumber } from "../posting";
 import type { DateRange } from "../purchasing/filters";
 import { type DiscountChange, saveDiscountChanges, savedDiscounts } from "./customer-discounts";
@@ -393,8 +393,9 @@ export async function createSalesOrder(ctx: ServiceCtx, input: unknown): Promise
 }
 
 /**
- * A customer typed on the order (name and phone): the active customer with that phone if there is
- * one, otherwise a new retailer created with the order, by anyone who may enter orders. A delivery
+ * A customer typed on the order (name, and a phone if known): the active customer with that phone,
+ * else the customer with that name (names are unique, any capitals), otherwise a new retailer
+ * created with the order, by anyone who may enter orders. A delivery
  * needs the customer's area (it decides the warehouse and the route).
  */
 async function customerForNewOrder(
@@ -403,12 +404,19 @@ async function customerForNewOrder(
   data: Pick<SalesOrderInput, "newCustomerName" | "newCustomerPhone" | "newCustomerAreaId">,
   fulfilment: "DELIVERY" | "COUNTER",
 ) {
-  const phone = data.newCustomerPhone!;
-  const existing = await tx.customer.findFirst({
-    where: { isActive: true, OR: [{ phone }, { whatsapp: phone }] },
-    orderBy: { createdAt: "asc" },
-  });
-  if (existing) return existing;
+  const phone = data.newCustomerPhone;
+  if (phone) {
+    const existing = await tx.customer.findFirst({
+      where: { isActive: true, OR: [{ phone }, { whatsapp: phone }] },
+      orderBy: { createdAt: "asc" },
+    });
+    if (existing) return existing;
+  }
+  // Names are unique (any capitals): a name already used is that customer, not a second one.
+  const sameName = await customerWithName(tx, data.newCustomerName!);
+  if (sameName && !sameName.isActive) throw new ServiceError(customerNameTaken(sameName));
+  if (sameName)
+    return found(await tx.customer.findUnique({ where: { id: sameName.id } }), "customer");
   if (fulfilment === "DELIVERY" && !data.newCustomerAreaId)
     throw new ServiceError("Choose the new customer's area, so the order can go on a route.");
   return createCustomerTx(
@@ -416,8 +424,8 @@ async function customerForNewOrder(
     ctx,
     customerSchema.parse({
       name: data.newCustomerName,
-      phone,
-      whatsapp: phone,
+      phone: phone ?? "",
+      whatsapp: phone ?? "",
       type: "RETAILER",
       areaId: data.newCustomerAreaId ?? "",
     }),

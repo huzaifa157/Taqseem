@@ -53,7 +53,7 @@ const warehouseIdSchema = z
   .preprocess(blankToUndefined, idSchema.optional())
   .transform((v) => v ?? null);
 
-/** The chosen customer, or blank with a new customer's name and phone (created with the order). */
+/** The chosen customer, or blank with a new customer's name and optional phone (created with the order). */
 const customerFields = {
   customerId: z.preprocess(blankToUndefined, idSchema.optional()).transform((v) => v ?? null),
   newCustomerName: optionalText(120),
@@ -64,8 +64,9 @@ const customerFields = {
     .transform((v) => v ?? null),
 };
 
+/** A new customer needs a name; the phone is optional. */
 function requireCustomer(
-  o: { customerId: string | null; newCustomerName: string | null; newCustomerPhone: string | null },
+  o: { customerId: string | null; newCustomerName: string | null },
   ctx: z.RefinementCtx,
 ) {
   if (o.customerId) return;
@@ -74,12 +75,6 @@ function requireCustomer(
       code: "custom",
       path: ["newCustomerName"],
       message: "Choose a customer, or enter the new customer's name",
-    });
-  if (!o.newCustomerPhone)
-    ctx.addIssue({
-      code: "custom",
-      path: ["newCustomerPhone"],
-      message: "Enter the new customer's phone",
     });
 }
 

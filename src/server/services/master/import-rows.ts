@@ -302,6 +302,8 @@ export type CustomerLookups = {
   companies: Map<string, string>;
   /** `name|phone` keys of existing customers, for duplicate detection. */
   existingKeys: Set<string>;
+  /** Names of existing customers (`nameKey`): names are unique, any capitals or spacing. */
+  existingNames: Set<string>;
 };
 
 /** Name and phone, compared however the phone was typed ("0300-…" and "+92 300…" match). */
@@ -415,8 +417,11 @@ export function validateCustomerRows(
     if (!parsed.success) errors.push(...issueMessages(parsed.error, CUSTOMER_LABELS));
 
     if (parsed.success) {
-      const key = customerKey(parsed.data.name, parsed.data.phone);
-      if (seen.has(key)) errors.push("This customer appears more than once in the file");
+      // Names are unique (any capitals or spacing); same name and phone was skipped above.
+      const key = nameKey(parsed.data.name);
+      if (lookups.existingNames.has(key))
+        errors.push("There is already a customer with this name; customer names must be different");
+      else if (seen.has(key)) errors.push("This customer name appears more than once in the file");
       seen.add(key);
     }
 

@@ -374,6 +374,7 @@ async function main() {
       slug: "demo",
       address: "GT Road, Shahdara, Lahore",
       phone: pk("042-37001122"),
+      billNote: "Returns and claims within one week, against this bill.",
     },
   });
   const tenantId = tenant.id;
@@ -648,11 +649,16 @@ async function main() {
       // ── Customers (30) with opening balances per company for some ──
       const customers: { id: string; warehouseKey: string }[] = [];
       const routeCounters = new Map<string, number>();
+      // Customer names are unique (a database index): pick again on a repeat.
+      const usedNames = new Set<string>();
       for (let i = 0; i < 30; i++) {
         const area = areas[i % areas.length]!;
         const seq = (routeCounters.get(area.id) ?? 0) + 1;
         routeCounters.set(area.id, seq);
-        const owner = `${pick(FIRST_NAMES)} ${pick(LAST_NAMES)}`;
+        let owner: string;
+        do owner = `${pick(FIRST_NAMES)} ${pick(LAST_NAMES)}`;
+        while (usedNames.has(owner));
+        usedNames.add(owner);
         const type = pick(CUSTOMER_TYPES);
         const phone = pk(`03${between(0, 4)}${between(0, 9)}-${between(1000000, 9999999)}`);
         const customer = await tx.customer.create({

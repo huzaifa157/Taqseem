@@ -96,6 +96,7 @@ async function validate(ctx: ServiceCtx, kind: ImportKind, file: ImportFile) {
     warehouses,
     companies: companyMap,
     existingKeys: new Set(customers.map((c) => customerKey(c.name, c.phone))),
+    existingNames: new Set(customers.map((c) => nameKey(c.name))),
   });
 }
 

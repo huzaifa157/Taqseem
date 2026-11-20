@@ -16,7 +16,7 @@ import { writeAudit } from "../../audit";
 import { assertCan } from "../../auth/permissions";
 import type { TenantTx } from "../../db/tenant";
 import { ServiceError } from "../errors";
-import { changedFields, PAGE_SIZE, paged, type ServiceCtx } from "./common";
+import { changedFields, PAGE_SIZE, paged, type ServiceCtx, withUniqueMessage } from "./common";
 import {
   customerBalances,
   getCustomerOpeningBalances,
@@ -143,6 +143,33 @@ async function applyOpeningBalances(
   return changes;
 }
 
+/** A customer name as stored: trimmed, single spaces. */
+export const tidyCustomerName = (name: string) => name.trim().replace(/\s+/g, " ");
+
+/**
+ * Customer names are unique in a business, ignoring capitals and extra spaces ("Ali Traders" and
+ * "ali  traders" are the same customer). The database has the same rule (an index on the
+ * lower-cased, tidied name); this finds the clash first for a readable message.
+ */
+export async function customerWithName(tx: TenantTx, name: string, exceptId?: string) {
+  return tx.customer.findFirst({
+    where: {
+      name: { equals: tidyCustomerName(name), mode: "insensitive" },
+      ...(exceptId ? { NOT: { id: exceptId } } : {}),
+    },
+    select: { id: true, name: true, isActive: true },
+    orderBy: { createdAt: "asc" },
+  });
+}
+
+export function customerNameTaken(existing: { name: string; isActive: boolean }) {
+  return `There is already a customer named “${existing.name}”${
+    existing.isActive ? "" : " (inactive: reactivate them under Customers)"
+  }. Customer names must be different; add the shop or area to tell them apart.`;
+}
+
+const NAME_TAKEN = "There is already a customer with this name. Customer names must be different.";
+
 /** Creates a customer inside the caller's transaction (also used by the import). */
 export async function createCustomerTx(
   tx: TenantTx,
@@ -157,10 +184,13 @@ export async function createCustomerTx(
     });
     if (existing) return existing;
   }
+  data.name = tidyCustomerName(data.name);
+  const taken = await customerWithName(tx, data.name);
+  if (taken) throw new ServiceError(customerNameTaken(taken));
   await assertArea(tx, data.areaId);
-  const created = await tx.customer.create({
-    data: { tenantId: ctx.user.tenantId, requestId, ...data },
-  });
+  const created = await withUniqueMessage(NAME_TAKEN, () =>
+    tx.customer.create({ data: { tenantId: ctx.user.tenantId, requestId, ...data } }),
+  );
   const openings = await applyOpeningBalances(tx, ctx, created.id, openingBalances);
   await writeAudit(tx, ctx.user, {
     action: "CREATE",
@@ -185,7 +215,12 @@ export async function updateCustomer(ctx: ServiceCtx, id: string, input: unknown
     const before = await tx.customer.findUnique({ where: { id } });
     if (!before) throw new ServiceError("This customer was not found.");
     if (data.areaId !== before.areaId) await assertArea(tx, data.areaId);
-    const after = await tx.customer.update({ where: { id }, data });
+    data.name = tidyCustomerName(data.name);
+    const taken = await customerWithName(tx, data.name, id);
+    if (taken) throw new ServiceError(customerNameTaken(taken));
+    const after = await withUniqueMessage(NAME_TAKEN, () =>
+      tx.customer.update({ where: { id }, data }),
+    );
     const openings = await applyOpeningBalances(tx, ctx, id, openingBalances);
     const diff = changedFields(before, after);
     if (Object.keys(openings).length > 0) {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { Input } from "@/components/ui/input";
@@ -26,8 +26,10 @@ export function Combobox<T>({
   hint,
   onNoMatch,
   noMatchLabel,
+  isExact,
   hideLabel = false,
   inputClassName,
+  labelClassName,
   onInputKeyDown,
   floating = false,
 }: {
@@ -44,12 +46,18 @@ export function Combobox<T>({
   emptyText?: string;
   limit?: number;
   hint?: string;
-  /** Offered when nothing matches: Enter or a click calls it with what was typed. */
+  /**
+   * "Add new" with what was typed: offered when nothing matches, and also, under the matches,
+   * when none of them is exactly what was typed (see isExact). Enter or a click calls it.
+   */
   onNoMatch?: (query: string) => void;
   noMatchLabel?: (query: string) => string;
+  /** Whether an item is exactly what was typed (lower case, trimmed); then no "add new" is offered. */
+  isExact?: (item: T, query: string) => boolean;
   /** In a table cell: the label is read out but not shown. */
   hideLabel?: boolean;
   inputClassName?: string;
+  labelClassName?: string;
   /** Keys the box does not use itself (e.g. moving between cells of a sheet). */
   onInputKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>, listOpen: boolean) => void;
   /**
@@ -64,6 +72,8 @@ export function Combobox<T>({
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const [place, setPlace] = useState<React.CSSProperties | null>(null);
+  // Closing on blur waits a moment so a click on the list still lands.
+  const closeTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   /** Where the floating list goes: under the box, or above it when there is more room there. */
   const measure = () => {
     const el = floating ? document.getElementById(`${id}-input`) : null;
@@ -92,6 +102,18 @@ export function Combobox<T>({
       : items
   ).slice(0, limit);
   const showList = open && q.length > 0;
+  // "Add new" comes after the matches (it is the only option when there are none).
+  const offerNew = Boolean(
+    onNoMatch && q && (results.length === 0 || (isExact && !items.some((i) => isExact(i, q)))),
+  );
+  const newIndex = results.length;
+  const optionCount = results.length + (offerNew ? 1 : 0);
+  const addNew = () => {
+    onNoMatch?.(query.trim());
+    setQuery("");
+    setOpen(false);
+    setActive(0);
+  };
   // Keep the floating list with its box while the page or the sheet scrolls.
   useEffect(() => {
     if (!floating || !showList) return;
@@ -113,7 +135,7 @@ export function Combobox<T>({
 
   return (
     <div className="relative space-y-1.5">
-      <Label htmlFor={`${id}-input`} className={cn(hideLabel && "sr-only")}>
+      <Label htmlFor={`${id}-input`} className={cn(labelClassName, hideLabel && "sr-only")}>
         {label}
       </Label>
       <Input
@@ -123,7 +145,7 @@ export function Combobox<T>({
         aria-expanded={showList}
         aria-controls={`${id}-list`}
         aria-autocomplete="list"
-        aria-activedescendant={showList && results[active] ? `${id}-opt-${active}` : undefined}
+        aria-activedescendant={showList && active < optionCount ? `${id}-opt-${active}` : undefined}
         aria-describedby={hint ? `${id}-hint` : undefined}
         autoComplete="off"
         className={inputClassName}
@@ -131,23 +153,28 @@ export function Combobox<T>({
         placeholder={placeholder}
         value={query}
         onChange={(e) => {
+          clearTimeout(closeTimer.current);
           setQuery(e.target.value);
           setOpen(true);
           setActive(0);
           measure();
         }}
         onFocus={() => {
+          // Back in the box before the last blur's close ran (fast typing): keep the list open.
+          clearTimeout(closeTimer.current);
           setOpen(true);
           measure();
         }}
-        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        onBlur={() => {
+          closeTimer.current = setTimeout(() => setOpen(false), 150);
+        }}
         onKeyDown={(e) => {
           onInputKeyDown?.(e, showList);
           if (e.defaultPrevented) return;
           if (e.key === "ArrowDown") {
             e.preventDefault();
             setOpen(true);
-            setActive((a) => Math.min(a + 1, results.length - 1));
+            setActive((a) => Math.min(a + 1, optionCount - 1));
           } else if (e.key === "ArrowUp") {
             e.preventDefault();
             setActive((a) => Math.max(a - 1, 0));
@@ -155,11 +182,7 @@ export function Combobox<T>({
             e.preventDefault();
             const item = results[active];
             if (showList && item) pick(item);
-            else if (showList && onNoMatch) {
-              onNoMatch(query.trim());
-              setQuery("");
-              setOpen(false);
-            }
+            else if (showList && offerNew && active === newIndex) addNew();
           } else if (e.key === "Escape") {
             // Something to close or clear: this Esc is used up. Otherwise the website's Esc
             // applies (leave the box, then back).
@@ -186,22 +209,7 @@ export function Combobox<T>({
               floating ? "z-50" : "absolute z-20 mt-1 max-h-80 w-full",
             )}
           >
-            {results.length === 0 && onNoMatch ? (
-              <li
-                id={`${id}-opt-0`}
-                role="option"
-                aria-selected
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  onNoMatch(query.trim());
-                  setQuery("");
-                  setOpen(false);
-                }}
-                className="bg-accent text-accent-foreground cursor-pointer px-3 py-2 text-sm font-medium"
-              >
-                {noMatchLabel ? noMatchLabel(query.trim()) : emptyText}
-              </li>
-            ) : results.length === 0 ? (
+            {results.length === 0 && !offerNew ? (
               <li className="text-muted-foreground px-3 py-2 text-sm">{emptyText}</li>
             ) : null}
             {results.map((item, i) => (
@@ -223,6 +231,25 @@ export function Combobox<T>({
                 {render(item)}
               </li>
             ))}
+            {offerNew ? (
+              <li
+                id={`${id}-opt-${newIndex}`}
+                role="option"
+                aria-selected={active === newIndex}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  addNew();
+                }}
+                onMouseEnter={() => setActive(newIndex)}
+                className={cn(
+                  "cursor-pointer px-3 py-2 text-sm font-medium",
+                  results.length > 0 && "border-t",
+                  active === newIndex && "bg-accent text-accent-foreground",
+                )}
+              >
+                {noMatchLabel ? noMatchLabel(query.trim()) : emptyText}
+              </li>
+            ) : null}
           </ul>
         </Floating>
       ) : null}

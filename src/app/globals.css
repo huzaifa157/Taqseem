@@ -37,6 +37,10 @@
   --series-2: #eb6834;
   --chart-grid: #e1e0d9;
   --chart-axis: #c3c2b7;
+  /* Taqseem green (the logo): main action, active entry row and the credit bar on order screens. */
+  --brand: oklch(0.45 0.09 165);
+  --brand-foreground: oklch(0.985 0 0);
+  --warning: oklch(0.75 0.15 75);
 }
 
 .dark {
@@ -70,6 +74,9 @@
   --series-2: #d95926;
   --chart-grid: #2c2c2a;
   --chart-axis: #383835;
+  --brand: oklch(0.7 0.12 165);
+  --brand-foreground: oklch(0.18 0.02 165);
+  --warning: oklch(0.8 0.14 80);
 }
 
 @theme inline {
@@ -87,6 +94,9 @@
   --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-warning: var(--warning);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);

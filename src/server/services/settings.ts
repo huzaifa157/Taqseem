@@ -11,7 +11,14 @@ import type { ServiceCtx } from "./master/common";
 // Business details and print settings of the signed-in tenant (Settings → Business & printing).
 
 export type PrintProfile = {
-  business: { name: string; address: string | null; phone: string | null; logoUrl: string | null };
+  business: {
+    name: string;
+    address: string | null;
+    phone: string | null;
+    logoUrl: string | null;
+    /** At the foot of every bill page; null prints nothing. */
+    billNote: string | null;
+  };
   print: PrintSettings;
 };
 
@@ -19,7 +26,13 @@ export type PrintProfile = {
 export async function getPrintProfile(ctx: ServiceCtx): Promise<PrintProfile> {
   const t = await ctx.db.tenant.findUniqueOrThrow({ where: { id: ctx.user.tenantId } });
   return {
-    business: { name: t.name, address: t.address, phone: t.phone, logoUrl: t.logoUrl },
+    business: {
+      name: t.name,
+      address: t.address,
+      phone: t.phone,
+      logoUrl: t.logoUrl,
+      billNote: t.billNote,
+    },
     print: {
       paper: t.billPaper,
       widthMm: t.billPaperWidthMm,
@@ -45,6 +58,7 @@ const settingsFields = {
   twoBillsPerA4: true,
   twoCopiesPerA5: true,
   compactBills: true,
+  billNote: true,
 } as const;
 
 export async function getBusinessSettings(ctx: ServiceCtx) {

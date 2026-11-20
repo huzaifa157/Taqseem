@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import {
   billLayout,
+  billPagination,
   billPageCss,
   COPY_LABELS,
   copyFontPt,
   DEFAULT_PRINT_SETTINGS,
   paperHint,
+  paginateBill,
   paperSize,
   statementPageCss,
   toSheets,
@@ -113,5 +115,49 @@ describe("paperHint", () => {
     expect(
       paperHint({ ...DEFAULT_PRINT_SETTINGS, paper: "CUSTOM", widthMm: 100, heightMm: 200 }),
     ).toBe("Prints on 100 × 200 mm paper");
+  });
+});
+
+describe("bill pages", () => {
+  const A5 = DEFAULT_PRINT_SETTINGS;
+  const A4 = { ...DEFAULT_PRINT_SETTINGS, paper: "A4" as const };
+
+  it("paginates only bills printed one per sheet in the full layout", () => {
+    expect(billPagination(A5)).not.toBeNull();
+    expect(billPagination({ ...A5, twoPerA4: true })).toBeNull();
+    expect(billPagination({ ...A5, compact: true })).toBeNull();
+    expect(billPagination({ ...A5, twoCopiesPerA5: true })).toBeNull();
+  });
+
+  it("fits more rows on A4 than A5 and fewer at a bigger font; the tick column only on A4", () => {
+    const a5 = billPagination(A5)!;
+    const a4 = billPagination(A4)!;
+    expect(a4.firstRows).toBeGreaterThan(a5.firstRows);
+    expect(a5.nextRows).toBeGreaterThan(a5.firstRows); // the short header leaves more room
+    expect(billPagination({ ...A5, fontSizePt: 14 })!.firstRows).toBeLessThan(a5.firstRows);
+    expect(a5.wide).toBe(false);
+    expect(a4.wide).toBe(true);
+    expect(a5.pageHeightMm).toBe(210 - 16);
+  });
+
+  it("splits lines into pages, keeping room for the totals on the last", () => {
+    const p = { firstRows: 30, nextRows: 36, totalsRows: 8 };
+    const lines = (n: number) => Array.from({ length: n }, (_, i) => i + 1);
+    const sizes = (n: number) => paginateBill(lines(n), p).map((page) => page.length);
+    expect(sizes(1)).toEqual([1]);
+    expect(sizes(23)).toEqual([23]); // 30 + 1 − 8: the totals fit on page 1
+    expect(sizes(24)).toEqual([23, 1]); // one more: page 2 gets a line and the totals
+    expect(sizes(50)).toEqual([30, 20]);
+    expect(sizes(59)).toEqual([30, 29]);
+    expect(sizes(60)).toEqual([30, 29, 1]);
+    expect(sizes(120)).toEqual([30, 36, 36, 18]);
+    // Every line once, in order.
+    expect(paginateBill(lines(120), p).flat()).toEqual(lines(120));
+  });
+
+  it("still makes progress on tiny pages", () => {
+    const sizes = paginateBill([1, 2, 3, 4], { firstRows: 1, nextRows: 1, totalsRows: 8 });
+    expect(sizes.flat()).toEqual([1, 2, 3, 4]);
+    expect(sizes.every((page) => page.length >= 1)).toBe(true);
   });
 });

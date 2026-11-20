@@ -20,6 +20,7 @@ type Values = {
   twoBillsPerA4: boolean;
   twoCopiesPerA5: boolean;
   compactBills: boolean;
+  billNote: string | null;
 };
 
 export function BusinessSettingsForm({
@@ -62,6 +63,15 @@ export function BusinessSettingsForm({
           label="Address"
           defaultValue={values.address}
           maxLength={200}
+          className="sm:col-span-2"
+        />
+        <TextField
+          state={state}
+          name="billNote"
+          label="Note on bills (optional)"
+          defaultValue={values.billNote}
+          maxLength={200}
+          placeholder="e.g. Returns and claims within one week, against this bill."
           className="sm:col-span-2"
         />
       </fieldset>

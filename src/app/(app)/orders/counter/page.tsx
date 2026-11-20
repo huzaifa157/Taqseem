@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 
-import { BackLink, PageHeader } from "@/components/layout/page-header";
 import { Notice } from "@/components/master/notice";
 import { OrderEntry } from "@/components/sales/order-entry";
 import { businessToday, toDateInput } from "@/lib/dates";
@@ -27,24 +26,30 @@ export default async function CounterSalePage({ searchParams }: PageProps<"/orde
   ]);
   return (
     <>
-      <BackLink href="/orders">Orders</BackLink>
-      <PageHeader
-        title="Counter sale"
-        description="The customer collects the goods at the warehouse. Saving takes the stock out and posts the bill; whatever is not paid now goes on the customer's account."
-      />
-      <Notice
-        notice={sp.notice}
-        text={last ? `Counter sale #${last.number} for ${last.customer.name} saved.` : undefined}
-        next={
-          last
-            ? [
-                { href: `/orders/${last.id}/bill`, label: "Print its bill" },
-                { href: `/orders/${last.id}`, label: "Open it" },
-              ]
-            : []
-        }
-      />
       <OrderEntry
+        header={{
+          backHref: "/orders",
+          backLabel: "Orders",
+          title: "Counter sale",
+          description:
+            "The customer collects the goods now: stock leaves the warehouse and the bill is posted. Anything unpaid goes on account.",
+        }}
+        notice={
+          <Notice
+            notice={sp.notice}
+            text={
+              last ? `Counter sale #${last.number} for ${last.customer.name} saved.` : undefined
+            }
+            next={
+              last
+                ? [
+                    { href: `/orders/${last.id}/bill`, label: "Print its bill" },
+                    { href: `/orders/${last.id}`, label: "Open it" },
+                  ]
+                : []
+            }
+          />
+        }
         key={`${lastId ?? ""}:${customerId ?? ""}`}
         mode="counter"
         action={saveCounterSaleAction}

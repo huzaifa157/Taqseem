@@ -47,7 +47,7 @@ export async function getBillView(ctx: ServiceCtx, orderId: string) {
   const snapshot = revision.lines as SnapshotLine[];
   const companyTotals = revision.companyTotals as SnapshotCompany[];
 
-  const [products, companies, tenant] = await Promise.all([
+  const [products, companies, tenant, paidAtSale] = await Promise.all([
     ctx.db.product.findMany({
       where: { id: { in: snapshot.map((l) => l.productId) } },
       select: { id: true, code: true, name: true, shortName: true },
@@ -57,6 +57,11 @@ export async function getBillView(ctx: ServiceCtx, orderId: string) {
       select: { id: true, name: true },
     }),
     ctx.db.tenant.findUniqueOrThrow({ where: { id: ctx.user.tenantId } }),
+    // Taken with the order (a counter sale's "paid now"); reversed payments do not count.
+    ctx.db.customerPayment.findMany({
+      where: { salesOrderId: order.id, status: "POSTED" },
+      select: { amount: true, method: true },
+    }),
   ]);
   const productById = new Map(products.map((p) => [p.id, p]));
   const companyName = new Map(companies.map((c) => [c.id, c.name]));
@@ -108,6 +113,7 @@ export async function getBillView(ctx: ServiceCtx, orderId: string) {
       status: order.status,
       deliveryDate: order.deliveryDate,
       orderDate: order.orderDate,
+      fulfilment: order.fulfilment,
     },
     customer: {
       name: order.customer.name,
@@ -133,6 +139,11 @@ export async function getBillView(ctx: ServiceCtx, orderId: string) {
     /** Part of `previous` from old paper bills (no company); never in the company sections. */
     oldBalance,
     totalDue,
+    /** Paid with the order (a counter sale), and how; the bill shows it and the balance left. */
+    paid: {
+      amount: paidAtSale.reduce((sum, p) => sum.add(p.amount), D(0)),
+      methods: [...new Set(paidAtSale.map((p) => p.method))],
+    },
     // From the customer's credit limit today, so a reprint follows a changed limit.
     minimumPayment: D(
       minimumPayment({

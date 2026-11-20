@@ -232,3 +232,80 @@ export function paperHint(s: PrintSettings): string {
   }
   return `Prints on ${PAPER_LABEL[s.paper]}`;
 }
+
+// ───────────── Bill pages ─────────────
+// A bill on its own sheet is laid out page by page: every line is one row of a fixed height, so
+// how many fit is a sum, not a measurement. Page 1 has the full header; later pages a short one
+// and a "brought forward" row; every page but the last ends with "carried forward"; the last has
+// the totals and the account. Heights are in em of the bill's font (the tenant's font size).
+
+/** One line of the bill (one row; a long name is cut short). */
+export const BILL_ROW_EM = 1.6;
+/** Page 1 above the lines: letterhead, bill to, an optional title, the column heads. */
+const FIRST_HEAD_EM = 11;
+/** Later pages above the lines: the short header and the column heads. */
+const NEXT_HEAD_EM = 6;
+/** Every page's footer: the bill note or "continued", and "Page 1 of 2". */
+const FOOTER_EM = 2.4;
+/** The last page under the lines: totals row, account and "This bill". */
+const TOTALS_EM = 12;
+
+export type BillPagination = {
+  /** Lines on page 1 when more pages follow (a "carried forward" row comes after them). */
+  firstRows: number;
+  /** Lines on a later page when more pages follow (between "brought" and "carried forward"). */
+  nextRows: number;
+  /** Rows' worth of space the totals need on the last page. */
+  totalsRows: number;
+  /** Height of one page inside the margins. */
+  pageHeightMm: number;
+  /** Wide enough (A4) for a tick column to check the goods against. */
+  wide: boolean;
+};
+
+const PT_TO_MM = 0.3528;
+
+/**
+ * Page sizes for a bill printed one per sheet in the full layout; null when bills are two to a
+ * sheet or compact (those keep flowing as one block, fitted by FitBills).
+ */
+export function billPagination(s: PrintSettings): BillPagination | null {
+  const layout = billLayout(s);
+  if (layout.perSheet !== 1 || usesCompactBill(s)) return null;
+  const pageHeightMm = layout.sheet.heightMm - 2 * s.marginMm;
+  const pageEm = pageHeightMm / (s.fontSizePt * PT_TO_MM);
+  const rows = (em: number) => Math.max(1, Math.floor(em / BILL_ROW_EM));
+  return {
+    firstRows: rows(pageEm - FIRST_HEAD_EM - FOOTER_EM - BILL_ROW_EM),
+    nextRows: rows(pageEm - NEXT_HEAD_EM - FOOTER_EM - 2 * BILL_ROW_EM),
+    totalsRows: Math.ceil(TOTALS_EM / BILL_ROW_EM),
+    pageHeightMm,
+    wide: layout.sheet.widthMm >= 180,
+  };
+}
+
+/**
+ * Splits a bill's lines into pages. A page that is not the last is filled up; the last keeps room
+ * for the totals (which take the place of "carried forward" plus totalsRows − 1 lines), and always
+ * has at least one line, so the totals never stand alone on a page.
+ */
+export function paginateBill<T>(
+  lines: T[],
+  p: Pick<BillPagination, "firstRows" | "nextRows" | "totalsRows">,
+): T[][] {
+  const pages: T[][] = [];
+  let i = 0;
+  let capacity = p.firstRows;
+  for (;;) {
+    const remaining = lines.length - i;
+    const fitsWithTotals = Math.max(1, capacity + 1 - p.totalsRows);
+    if (remaining <= fitsWithTotals) {
+      pages.push(lines.slice(i));
+      return pages;
+    }
+    const take = Math.min(capacity, remaining - 1);
+    pages.push(lines.slice(i, i + take));
+    i += take;
+    capacity = p.nextRows;
+  }
+}

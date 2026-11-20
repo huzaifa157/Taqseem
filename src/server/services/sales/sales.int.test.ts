@@ -244,8 +244,24 @@ describe("new customer typed on the order", () => {
     expect(list.total).toBe(2);
   });
 
-  it("needs a name and a phone, and an area for a delivery", async () => {
-    await expect(newOrder({ newCustomerName: "No Phone" })).rejects.toThrow(/phone/);
+  it("needs a name (the phone is optional), and reuses a customer by name in any capitals", async () => {
+    const area = await t.ctx.db.area.findFirstOrThrow();
+    const r = await newOrder({ newCustomerName: "Walk-in  Rafiq", newCustomerAreaId: area.id });
+    const created = await t.ctx.db.customer.findUniqueOrThrow({
+      where: { id: (await getSalesOrder(t.ctx, r.id)).customerId },
+    });
+    expect(created).toMatchObject({ name: "Walk-in Rafiq", phone: null, whatsapp: null });
+
+    const again = await newOrder({ newCustomerName: "WALK-IN rafiq", newCustomerAreaId: area.id });
+    expect((await getSalesOrder(t.ctx, again.id)).customerId).toBe(created.id);
+    expect(
+      await t.ctx.db.customer.count({
+        where: { name: { contains: "rafiq", mode: "insensitive" } },
+      }),
+    ).toBe(1);
+  });
+
+  it("needs a name, and an area for a delivery", async () => {
     await expect(newOrder({ newCustomerPhone: "03001112222" })).rejects.toThrow(/name/);
     await expect(
       newOrder({ newCustomerName: "X", newCustomerPhone: "+44 20 7946 0958" }),

@@ -81,6 +81,38 @@ describe("idempotent creates and readable duplicates", () => {
       "already uses this code",
     );
   });
+
+  it("keeps customer names unique, ignoring capitals and extra spaces", async () => {
+    const ali = await createCustomer(t.ctx, { name: "  Ali   Traders ", type: "RETAILER" });
+    expect(ali.name).toBe("Ali Traders");
+    await expect(createCustomer(t.ctx, { name: "ali traders", type: "RETAILER" })).rejects.toThrow(
+      "already a customer named “Ali Traders”",
+    );
+    await expect(
+      createCustomer(t.ctx, { name: "ALI  TRADERS", type: "WHOLESALER" }),
+    ).rejects.toThrow(ServiceError);
+
+    // Renaming onto another customer's name is refused; keeping your own name is fine.
+    const bilal = await createCustomer(t.ctx, { name: "Bilal Store", type: "RETAILER" });
+    await expect(
+      updateCustomer(t.ctx, bilal.id, { name: "Ali traders", type: "RETAILER" }),
+    ).rejects.toThrow("already a customer named");
+    await updateCustomer(t.ctx, bilal.id, { name: "BILAL store", type: "RETAILER" });
+
+    // An inactive customer still holds the name.
+    await setRecordActive(t.ctx, "Customer", { id: ali.id }, false);
+    await expect(createCustomer(t.ctx, { name: "Ali Traders", type: "RETAILER" })).rejects.toThrow(
+      "inactive",
+    );
+
+    // The database refuses it too, even past the service.
+    await expect(
+      t.ctx.db.customer.create({
+        data: { tenantId: t.ctx.user.tenantId, name: "ali TRADERS", type: "RETAILER" },
+      }),
+    ).rejects.toThrow();
+    expect(await t.ctx.db.customer.count()).toBe(2);
+  });
 });
 
 describe("products and price history", () => {

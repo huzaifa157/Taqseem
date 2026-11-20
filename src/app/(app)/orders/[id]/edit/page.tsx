@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 
-import { BackLink, PageHeader } from "@/components/layout/page-header";
 import { orNotFound } from "@/components/master/page-helpers";
 import { OrderEntry } from "@/components/sales/order-entry";
 import { toDateInput } from "@/lib/dates";
@@ -26,12 +25,13 @@ export default async function EditOrderPage({ params }: PageProps<"/orders/[id]/
   if (!isOpenOrder(order.status)) redirect(`/orders/${id}`);
   return (
     <>
-      <BackLink href={`/orders/${id}`}>Order #{order.number}</BackLink>
-      <PageHeader
-        title={`Edit order #${order.number}`}
-        description="Changes are kept as a new bill revision."
-      />
       <OrderEntry
+        header={{
+          backHref: `/orders/${id}`,
+          backLabel: `Order #${order.number}`,
+          title: `Edit order #${order.number}`,
+          description: "Changes are kept as a new bill revision.",
+        }}
         action={saveSalesOrderAction.bind(null, id)}
         customers={
           customers.some((c) => c.id === order.customerId)

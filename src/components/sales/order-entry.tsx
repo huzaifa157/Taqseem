@@ -1,11 +1,17 @@
 "use client";
 
 import Link from "next/link";
-import { useActionState, useEffect, useRef, useState, useTransition } from "react";
+import {
+  useActionState,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  useTransition,
+} from "react";
 
 import { FieldError, FormMessage } from "@/components/form/form-message";
 import { useRequestId } from "@/components/form/use-request-id";
-import { DataTable, EmptyRow, Td, Th } from "@/components/list/data-table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,6 +21,7 @@ import { NativeSelect } from "@/components/ui/native-select";
 import { type ActionState, fieldError, idleState } from "@/lib/action-state";
 import { formatMoney } from "@/lib/format";
 import { localPhone } from "@/lib/phone";
+import { cn } from "@/lib/utils";
 import {
   billTotals,
   checkCredit,
@@ -48,6 +55,40 @@ const SOURCES = [
   { value: "BOOKER_APP", label: "Booker app" },
 ];
 
+const WAREHOUSE_KEY = "taqseem.orderWarehouse";
+
+/** Dozens a new line starts with (the smallest amount that can be sold). */
+const DEFAULT_QTY = "0.5";
+
+/**
+ * Whether what was typed in the customer box is exactly this customer: the same name (any capitals
+ * or spacing, names are unique) or the same phone. Otherwise "+ New customer" is offered too.
+ */
+function isSameCustomer(c: CustomerOption, typed: string) {
+  const name = (t: string) => t.trim().replace(/s+/g, " ").toLowerCase();
+  if (name(c.name) === name(typed)) return true;
+  const digits = typed.replace(/D/g, "");
+  return (
+    digits.length >= 7 &&
+    [c.phone, localPhone(c.phone)].some((p) => p && p.replace(/D/g, "") === digits)
+  );
+}
+
+/** The warehouse remembered on this computer (browser only; null on the server). */
+function readSavedWarehouse(): string | null {
+  try {
+    return localStorage.getItem(WAREHOUSE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** Re-read when another tab changes it. */
+function subscribeSavedWarehouse(onChange: () => void) {
+  window.addEventListener("storage", onChange);
+  return () => window.removeEventListener("storage", onChange);
+}
+
 /** "3.5" or "3dz 6pk" → 42 packets; null unless a positive number of whole or half dozens. */
 function halfDozens(qty: string): number | null {
   const packets = parseQuantity(qty);
@@ -58,7 +99,9 @@ function halfDozens(qty: string): number | null {
  * Keyboard-first order entry:
  *  1. type the customer (name, shop, phone or area) → Enter;
  *  2. type a product code or name → Enter → type dozens → Enter, or Tab Tab (past the discount),
- *     back to the product box, which sits under the last product;
+ *     back to the product box in the grid's entry row, under the last line. Enter in the
+ *     header (dates, note, new customer) moves to the next box, and from the last one into
+ *     the grid;
  *  3. Ctrl+Enter books the order. In a dozens box: Alt+R the customer's discount, Ctrl+Delete
  *     removes the line. Rates are fixed; a discount typed on a line is saved for the customer.
  * Prices, discounts, available stock and the credit limit update as you type; the server
@@ -72,7 +115,13 @@ export function OrderEntry({
   initial,
   mode = "order",
   areas = [],
+  header,
+  notice,
 }: {
+  /** The page's top bar: back link, title and a short note (the form adds its own boxes). */
+  header: { backHref: string; backLabel: string; title: string; description?: string };
+  /** A "saved" notice from the last save, shown under the top bar. */
+  notice?: React.ReactNode;
   action: (state: ActionState, formData: FormData) => Promise<ActionState>;
   customers: CustomerOption[];
   warehouses: { id: string; name: string }[];
@@ -97,7 +146,28 @@ export function OrderEntry({
   const [state, formAction, saving] = useActionState(action, idleState);
   const withRequestId = useRequestId();
   const [customerId, setCustomerId] = useState(initial.customerId ?? "");
-  const [warehouseId, setWarehouseId] = useState(initial.warehouseId ?? "");
+  // The warehouse for a customer without an area (or a new one): the one chosen here, else the one
+  // last chosen on this computer, else, on the counter, the first warehouse, so a counter sale
+  // never asks. useSyncExternalStore reads the saved one after hydration (no mismatch).
+  const savedWarehouseId = useSyncExternalStore(
+    subscribeSavedWarehouse,
+    readSavedWarehouse,
+    () => null,
+  );
+  const [chosenWarehouseId, setChosenWarehouseId] = useState(initial.warehouseId ?? "");
+  const warehouseId =
+    chosenWarehouseId ||
+    (warehouses.some((w) => w.id === savedWarehouseId) ? savedWarehouseId! : "") ||
+    // The counter, or a business with one warehouse, never has to choose.
+    (counter || warehouses.length === 1 ? (warehouses[0]?.id ?? "") : "");
+  const setWarehouseId = (id: string) => {
+    setChosenWarehouseId(id);
+    try {
+      if (id) localStorage.setItem(WAREHOUSE_KEY, id);
+    } catch {
+      // Storage blocked (private window): the choice just is not remembered.
+    }
+  };
   const [context, setContext] = useState<OrderEntryContext | null>(null);
   const [contextError, setContextError] = useState<string | null>(null);
   const [loading, startLoading] = useTransition();
@@ -117,13 +187,41 @@ export function OrderEntry({
   const [paidFull, setPaidFull] = useState(counter);
   const [method, setMethod] = useState("CASH");
   const productSearch = useRef<HTMLInputElement>(null);
+  const customerSearch = useRef<HTMLInputElement>(null);
+  const [noteOpen, setNoteOpen] = useState(Boolean(initial.note));
+  // "Change" (F2): the customer search comes back; the customer stays until another is picked.
+  const [changingCustomer, setChangingCustomer] = useState(false);
+  useEffect(() => {
+    if (changingCustomer) customerSearch.current?.focus();
+  }, [changingCustomer]);
+  useEffect(() => {
+    if (!isNew) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "F2") return;
+      e.preventDefault();
+      setChangingCustomer(true);
+      customerSearch.current?.focus();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isNew]);
+  const gridScrollRef = useRef<HTMLDivElement>(null);
+  const sectionRef = useRef<HTMLElement>(null);
+  const footerRef = useRef<HTMLDivElement>(null);
+  // Keep the bill grid fitted to the window (see fitGridToWindow).
+  useEffect(() => {
+    const fit = () => fitGridToWindow(gridScrollRef.current, sectionRef.current, footerRef.current);
+    fit();
+    window.addEventListener("resize", fit);
+    return () => window.removeEventListener("resize", fit);
+  });
   const qtyInputs = useRef(new Map<string, HTMLInputElement>());
   // After picking a customer, the product search appears once their products have loaded.
   const focusSearchWhenLoaded = useRef(false);
   useEffect(() => {
     if (context && focusSearchWhenLoaded.current) {
       focusSearchWhenLoaded.current = false;
-      productSearch.current?.focus();
+      focusEntryBox(productSearch.current);
     }
   }, [context]);
 
@@ -191,6 +289,7 @@ export function OrderEntry({
 
   const chooseCustomer = (c: CustomerOption) => {
     focusSearchWhenLoaded.current = true;
+    setChangingCustomer(false);
     setNewCustomer(null);
     setCustomerId(c.id);
     setLines([]);
@@ -205,7 +304,11 @@ export function OrderEntry({
     }
     pendingFocus.current = p.id;
     // The customer's own discount on this product is used again (it can still be changed).
-    setLines((ls) => [...ls, { productId: p.id, qty: "", discount: p.customerDiscount ?? "" }]);
+    // Starts at half a dozen, selected: Enter keeps it, typing a number replaces it.
+    setLines((ls) => [
+      ...ls,
+      { productId: p.id, qty: DEFAULT_QTY, discount: p.customerDiscount ?? "" },
+    ]);
   };
 
   const repeatLastOrder = () => {
@@ -224,6 +327,7 @@ export function OrderEntry({
   // Nothing matched what was typed: start a new customer with it as the phone or the name.
   const startNewCustomer = (typed: string) => {
     const isPhone = /^[+\d][\d\s-]*$/.test(typed);
+    setChangingCustomer(false);
     setCustomerId("");
     setContext(null);
     setLines([]);
@@ -232,7 +336,42 @@ export function OrderEntry({
   };
 
   const customer = customers.find((c) => c.id === customerId);
+  // An existing customer without an area: the goods come from the warehouse chosen in "From"
+  // (on the counter it is always filled in), sent with the order.
+  const customerWithoutArea = Boolean(
+    context && !newCustomer && context.customer.areaName === null,
+  );
   const needsWarehouse = Boolean(context && !context.warehouseId && !newCustomer);
+
+  const hasProducts = Boolean(context && context.warehouseId);
+  const cannotSave = saving || !context || lines.length === 0;
+  // The grid always shows GRID_ROWS rows (lines, the entry row, then empty ones) like a ledger.
+  const emptyRows = Math.max(0, GRID_ROWS - lines.length - 1);
+
+  // Enter in the header goes to the next header box, and from the last one into the grid.
+  const nextHeaderField = (from: HTMLElement) => {
+    const header = from.closest("[data-voucher-header]");
+    const fields = header
+      ? [
+          ...header.querySelectorAll<HTMLElement>(
+            "input:not([type=hidden]):not([disabled]), select:not([disabled])",
+          ),
+        ]
+      : [];
+    const next = fields[fields.indexOf(from) + 1];
+    if (next) next.focus();
+    else focusEntryBox(productSearch.current);
+  };
+
+  // The warehouse the goods come from: fixed by the customer's (or new customer's) area, otherwise
+  // chosen here (remembered on this computer).
+  const fixedWarehouseId = newCustomer
+    ? newArea?.warehouseId
+    : context && !customerWithoutArea
+      ? (context.warehouseId ?? undefined)
+      : undefined;
+  const fixedWarehouseName = warehouses.find((w) => w.id === fixedWarehouseId)?.name;
+  const showSearch = isNew && ((!customerId && !newCustomer) || changingCustomer);
 
   return (
     <form
@@ -248,456 +387,811 @@ export function OrderEntry({
           repeatLastOrder();
         } else if (
           e.key === "Enter" &&
-          target instanceof HTMLInputElement &&
-          target.type !== "checkbox"
+          ((target instanceof HTMLInputElement &&
+            target.type !== "checkbox" &&
+            target.type !== "radio") ||
+            target instanceof HTMLSelectElement)
         ) {
-          // Plain Enter never submits by accident; in a quantity box it goes back to product search.
+          // Plain Enter never submits by accident. In a line it goes back to the product box;
+          // in the header to the next box (the customer box handles its own Enter).
           e.preventDefault();
-          if (target.name === "quantity") productSearch.current?.focus();
+          if (target.name === "quantity" || target.name === "discount")
+            focusEntryBox(productSearch.current);
+          else if (target.getAttribute("role") !== "combobox") nextHeaderField(target);
         } else if (target instanceof HTMLInputElement && target.name === "quantity") {
           const productId = target.id.replace(/^qty-/, "");
           if (e.key === "Delete" && e.ctrlKey) {
             e.preventDefault();
             setLines((ls) => ls.filter((l) => l.productId !== productId));
-            productSearch.current?.focus();
+            focusEntryBox(productSearch.current);
           } else if (e.altKey && e.code === "KeyR") {
             e.preventDefault();
             document.getElementById(`discount-${productId}`)?.focus();
           }
         }
       }}
-      className="space-y-6"
+      className="space-y-3"
     >
       <input type="hidden" name="customerId" value={customerId} />
       {newCustomer && !newArea ? (
         <input type="hidden" name="warehouseId" value={newWarehouseId ?? ""} />
       ) : null}
-      {needsWarehouse || initial.warehouseId ? (
+      {customerWithoutArea || needsWarehouse || initial.warehouseId ? (
         <input type="hidden" name="warehouseId" value={warehouseId} />
       ) : null}
       <input type="hidden" name="allowOverCredit" value={allowOver ? "true" : "false"} />
 
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
-        <div className="space-y-4">
-          {isNew ? (
-            <Combobox
-              label="Customer"
-              items={customers}
-              getKey={(c) => c.id}
-              rank={(c, q) =>
-                rankText(q, null, c.name, c.shopName, c.phone, localPhone(c.phone), c.area?.name)
-              }
-              render={(c) => (
-                <span>
-                  <span className="font-medium">{c.name}</span>
-                  {c.shopName ? ` · ${c.shopName}` : ""}
-                  <span className="text-muted-foreground">
-                    {c.area ? ` · ${c.area.name}` : ""}
-                    {c.phone ? ` · ${c.phone}` : ""}
-                  </span>
-                </span>
-              )}
-              onSelect={chooseCustomer}
-              onNoMatch={startNewCustomer}
-              noMatchLabel={(q) => `+ New customer “${q}”`}
-              placeholder="Name, shop, phone or area"
-              autoFocus={!customerId}
-              hint={
-                customer
-                  ? `Selected: ${customer.name}${customer.shopName ? `, ${customer.shopName}` : ""}`
-                  : undefined
-              }
-            />
+      <div data-voucher-header className="space-y-3">
+        {/* Top bar. Counter sale: title, note, warehouse, date. Orders: back link, title, short
+            explanation, warehouse, repeat last order and the dates. */}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          <Link
+            href={header.backHref}
+            data-back-link
+            aria-keyshortcuts="Escape"
+            className={cn(
+              "text-muted-foreground hover:text-foreground inline-flex items-center gap-1.5 text-sm",
+              // Not shown on the counter sale; Esc still goes back through it.
+              counter && "sr-only",
+            )}
+          >
+            ← {header.backLabel}
+            <Kbd>Esc</Kbd>
+          </Link>
+          {counter ? null : <span aria-hidden className="bg-border h-5 w-px" />}
+          <h1 className="text-lg font-semibold tracking-tight">{header.title}</h1>
+          {counter ? (
+            <div className="bg-background focus-within:border-ring focus-within:ring-ring/40 flex h-9 min-w-48 flex-1 items-center gap-2 rounded-md border px-2.5 focus-within:ring-2">
+              <label htmlFor="note" className={HEADER_LABEL}>
+                Note
+              </label>
+              <Input
+                id="note"
+                name="note"
+                className={cn(PILL_INPUT, "w-full")}
+                defaultValue={initial.note}
+                maxLength={500}
+                placeholder="Optional"
+              />
+            </div>
+          ) : header.description ? (
+            <p
+              className="text-muted-foreground min-w-0 flex-1 basis-48 truncate text-xs"
+              title={header.description}
+            >
+              {header.description}
+            </p>
           ) : (
-            <div>
-              <p className="text-sm font-medium">Customer</p>
-              <p className="mt-1">
-                {customer
-                  ? `${customer.name}${customer.shopName ? `, ${customer.shopName}` : ""}`
-                  : ""}
-              </p>
-            </div>
+            <span className="flex-1" />
           )}
-          {newCustomer ? (
-            <NewCustomerFields
-              state={state}
-              value={newCustomer}
-              onChange={(v) => setNewCustomer({ ...newCustomer, ...v })}
-              onCancel={() => {
-                setNewCustomer(null);
-                setContext(null);
-                setLines([]);
-              }}
-              areas={areas}
-              counter={counter}
-              warehouses={warehouses}
-              warehouseId={newArea ? "" : (newWarehouseId ?? "")}
-              setWarehouseId={setWarehouseId}
-            />
+          {/* No "From" on the counter sale (it sells from the customer's area warehouse, else the
+              remembered or first one), nor when there is only one warehouse. */}
+          {!counter && warehouses.length > 1 ? (
+            <Pill label="From" htmlFor="order-warehouse">
+              {fixedWarehouseId ? (
+                <span className="text-sm font-medium" title="Set by the customer's area">
+                  {fixedWarehouseName}
+                </span>
+              ) : newCustomer && !counter ? (
+                <span className="text-muted-foreground text-sm">Set by the area</span>
+              ) : (
+                <NativeSelect
+                  id="order-warehouse"
+                  className={PILL_INPUT}
+                  value={newCustomer ? (newWarehouseId ?? "") : warehouseId}
+                  onChange={(e) => setWarehouseId(e.target.value)}
+                  title="Where the goods come from (remembered on this computer)"
+                >
+                  {!newCustomer ? <option value="">Choose a warehouse</option> : null}
+                  {warehouses.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.name}
+                    </option>
+                  ))}
+                </NativeSelect>
+              )}
+            </Pill>
           ) : null}
-          {needsWarehouse ? (
-            <div className="space-y-1.5">
-              <Label htmlFor="order-warehouse">Deliver from (customer has no area)</Label>
-              <NativeSelect
-                id="order-warehouse"
-                value={warehouseId}
-                onChange={(e) => setWarehouseId(e.target.value)}
-              >
-                <option value="">Choose a warehouse</option>
-                {warehouses.map((w) => (
-                  <option key={w.id} value={w.id}>
-                    {w.name}
-                  </option>
-                ))}
-              </NativeSelect>
-            </div>
-          ) : null}
-          <div className="grid gap-4 sm:grid-cols-4">
-            {counter ? (
-              <div className="space-y-1.5">
-                <Label htmlFor="saleDate">Sale date</Label>
+          <Button
+            type="button"
+            variant="outline"
+            className="h-9"
+            onClick={repeatLastOrder}
+            disabled={!hasProducts || !context?.lastOrder}
+            aria-keyshortcuts="Alt+L"
+            title={
+              context?.lastOrder
+                ? `Repeat order #${context.lastOrder.number}`
+                : "The customer has no earlier order"
+            }
+          >
+            ↻ Repeat last order <Kbd>Alt+L</Kbd>
+          </Button>
+          {counter ? (
+            <Pill label="Date" htmlFor="saleDate">
+              <Input
+                id="saleDate"
+                name="saleDate"
+                type="date"
+                className={PILL_INPUT}
+                defaultValue={initial.orderDate}
+                required
+              />
+            </Pill>
+          ) : (
+            <>
+              <Pill label="Order" htmlFor="orderDate">
                 <Input
-                  id="saleDate"
-                  name="saleDate"
+                  id="orderDate"
+                  name="orderDate"
                   type="date"
+                  className={PILL_INPUT}
                   defaultValue={initial.orderDate}
                   required
                 />
-              </div>
-            ) : (
-              <>
-                <div className="space-y-1.5">
-                  <Label htmlFor="orderDate">Order date</Label>
-                  <Input
-                    id="orderDate"
-                    name="orderDate"
-                    type="date"
-                    defaultValue={initial.orderDate}
-                    required
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="deliveryDate">Delivery date</Label>
-                  <Input
-                    id="deliveryDate"
-                    name="deliveryDate"
-                    type="date"
-                    defaultValue={initial.deliveryDate}
-                    required
-                    aria-invalid={fieldError(state, "deliveryDate") ? true : undefined}
-                  />
-                  <FieldError id="deliveryDate-error" message={fieldError(state, "deliveryDate")} />
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="source">Taken via</Label>
-                  <NativeSelect id="source" name="source" defaultValue={initial.source ?? "OFFICE"}>
-                    {SOURCES.map((s) => (
-                      <option key={s.value} value={s.value}>
-                        {s.label}
-                      </option>
-                    ))}
-                  </NativeSelect>
-                </div>
-              </>
-            )}
-            <div className="space-y-1.5">
-              <Label htmlFor="note">Note</Label>
-              <Input id="note" name="note" defaultValue={initial.note} maxLength={500} />
-            </div>
-          </div>
-        </div>
-
-        <CustomerPanel
-          context={context}
-          loading={loading}
-          error={contextError}
-          credit={credit}
-          byCompany={byCompany}
-          counter={counter}
-        />
-      </div>
-
-      {context && context.warehouseId ? (
-        <section aria-labelledby="lines-heading" className="space-y-3">
-          <h2 id="lines-heading" className="sr-only">
-            Order lines
-          </h2>
-          <DataTable>
-            <thead>
-              <tr>
-                <Th>Code</Th>
-                <Th>Product</Th>
-                <Th>Company</Th>
-                <Th className="text-right">Available</Th>
-                <Th className="w-28">Dozens</Th>
-                <Th className="text-right">Rate / dz</Th>
-                <Th className="text-right">Discount / dz</Th>
-                <Th className="text-right">Amount</Th>
-                <Th>
-                  <span className="sr-only">Remove</span>
-                </Th>
-              </tr>
-            </thead>
-            <tbody>
-              {lines.length === 0 ? (
-                <EmptyRow colSpan={9}>
-                  No products yet. Search below, or repeat the last order.
-                </EmptyRow>
-              ) : null}
-              {lines.map((line, i) => {
-                const product = productById.get(line.productId);
-                if (!product) return null;
-                const qty = halfDozens(line.qty);
-                const p = priced.find((x) => x.productId === line.productId);
-                const short = qty !== null && qty > product.available;
-                const error =
-                  fieldError(state, `lines.${i}.quantity`) ??
-                  (line.qty && qty === null
-                    ? "Whole or half dozens: 2, 2.5 or 2dz 6pk"
-                    : undefined);
-                return (
-                  <tr key={line.productId}>
-                    <Td className="font-mono">{product.code}</Td>
-                    <Td>
-                      <label htmlFor={`qty-${product.id}`}>{product.name}</label>
-                      <input type="hidden" name="productId" value={product.id} />
-                    </Td>
-                    <Td className="text-muted-foreground">{product.companyName}</Td>
-                    <Td className="text-right tabular-nums">
-                      {formatDozens(product.available)}
-                      {short ? (
-                        <Badge variant="destructive" className="ml-1">
-                          Short {formatDozens(qty! - product.available)}
-                        </Badge>
-                      ) : null}
-                    </Td>
-                    <Td>
-                      <Input
-                        id={`qty-${product.id}`}
-                        name="quantity"
-                        inputMode="decimal"
-                        autoComplete="off"
-                        className="h-8"
-                        ref={(el) => {
-                          if (el) qtyInputs.current.set(product.id, el);
-                          else qtyInputs.current.delete(product.id);
-                        }}
-                        value={line.qty}
-                        onChange={(e) =>
-                          setLines((ls) =>
-                            ls.map((l) =>
-                              l.productId === line.productId ? { ...l, qty: e.target.value } : l,
-                            ),
-                          )
-                        }
-                        aria-invalid={error ? true : undefined}
-                        aria-describedby={error ? `qty-${product.id}-error` : undefined}
-                      />
-                      <FieldError id={`qty-${product.id}-error`} message={error} />
-                    </Td>
-                    <Td className="text-right tabular-nums">{formatMoney(product.saleRate)}</Td>
-                    <Td className="text-right">
-                      <DiscountCell
-                        line={line}
-                        product={product}
-                        priced={p}
-                        error={fieldError(state, `lines.${i}.discount`)}
-                        onChange={(discount) =>
-                          setLines((ls) =>
-                            ls.map((l) =>
-                              l.productId === line.productId ? { ...l, discount } : l,
-                            ),
-                          )
-                        }
-                      />
-                    </Td>
-                    <Td className="text-right font-medium tabular-nums">
-                      {p ? formatMoney(p.netAmount) : ""}
-                    </Td>
-                    <Td>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        aria-label={`Remove ${product.name}`}
-                        aria-keyshortcuts="Control+Delete"
-                        title="Remove (Ctrl+Delete in the dozens box)"
-                        tabIndex={-1}
-                        onClick={() =>
-                          setLines((ls) => ls.filter((l) => l.productId !== line.productId))
-                        }
-                      >
-                        ✕
-                      </Button>
-                    </Td>
-                  </tr>
-                );
-              })}
-            </tbody>
-            <tfoot>
-              <tr className="font-medium">
-                <Td>Total</Td>
-                <Td />
-                <Td />
-                <Td />
-                <Td className="tabular-nums">
-                  {total.quantity ? formatDozens(total.quantity) : ""}
-                </Td>
-                <Td />
-                <Td className="text-right tabular-nums">
-                  {total.discountAmount.gt(0) ? `−${formatMoney(total.discountAmount)}` : ""}
-                </Td>
-                <Td className="text-right tabular-nums">{formatMoney(total.netAmount)}</Td>
-                <Td />
-              </tr>
-            </tfoot>
-          </DataTable>
-          {/* Under the last product, so the next product is always two Tabs (dozens, discount) away. */}
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="min-w-72 flex-1">
-              <Combobox
-                label="Add product"
-                items={products}
-                getKey={(p) => p.id}
-                rank={(p, q) => rankText(q, p.code, p.name, p.companyName)}
-                render={(p) => (
-                  <span className="flex justify-between gap-3">
-                    <span>
-                      <span className="font-mono">{p.code}</span> {p.name}
-                      <span className="text-muted-foreground"> · {p.companyName}</span>
-                    </span>
-                    <span
-                      className={
-                        p.available <= 0 ? "text-destructive font-medium" : "text-muted-foreground"
-                      }
-                    >
-                      {formatDozens(p.available)} free
-                    </span>
-                  </span>
-                )}
-                onSelect={addProduct}
-                inputRef={productSearch}
-                placeholder="Code or name, then Enter"
-              />
-            </div>
-            {context.lastOrder ? (
-              <Button
-                type="button"
-                variant="outline"
-                onClick={repeatLastOrder}
-                aria-keyshortcuts="Alt+L"
-              >
-                Repeat last order (#{context.lastOrder.number}) <Kbd>Alt+L</Kbd>
-              </Button>
-            ) : null}
-          </div>
-
-          <p className="text-muted-foreground flex flex-wrap gap-x-3 gap-y-1 text-xs pointer-coarse:hidden">
-            <span>
-              <Kbd>Enter</Kbd> adds the product, then type dozens (3.5)
-            </span>
-            <span>
-              <Kbd>Enter</Kbd> or <Kbd>Tab</Kbd> <Kbd>Tab</Kbd> next product
-            </span>
-            <span>
-              <Kbd>Alt+R</Kbd> customer&apos;s discount
-            </span>
-            <span>
-              <Kbd>Ctrl+Delete</Kbd> remove line
-            </span>
-            <span>
-              <Kbd>Alt+L</Kbd> repeat last order
-            </span>
-            <span>
-              <Kbd>Ctrl+Enter</Kbd> book
-            </span>
-            <span>
-              <Kbd>Esc</Kbd> leave the box
-            </span>
-          </p>
-        </section>
-      ) : null}
-
-      {counter && context && context.warehouseId ? (
-        <PaidNow
-          state={state}
-          paid={paid}
-          setPaid={setPaid}
-          paidFull={paidFull}
-          setPaidFull={setPaidFull}
-          method={method}
-          setMethod={setMethod}
-          total={total.netAmount.toString()}
-          onAccount={onAccount}
-        />
-      ) : null}
-
-      {credit?.over ? (
-        <div
-          role="alert"
-          className="border-destructive max-w-2xl space-y-2 rounded-md border-2 p-3 text-sm"
-        >
-          <p className="font-medium">
-            This {counter ? "sale" : "order"} takes the customer {formatMoney(credit.over)} past
-            their credit limit of {formatMoney(credit.limit)}.
-          </p>
-          {canOverrideCredit ? (
-            <label className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={allowOver}
-                onChange={(e) => setAllowOver(e.target.checked)}
-              />
-              Allow past the credit limit
-            </label>
-          ) : counter ? (
-            <p>Take more payment now, or ask the owner to allow it.</p>
-          ) : (
-            <p>
-              You can still book it; it will wait for the owner&apos;s approval before dispatch.
-            </p>
+              </Pill>
+              <Pill label="Delivery" htmlFor="deliveryDate">
+                <Input
+                  id="deliveryDate"
+                  name="deliveryDate"
+                  type="date"
+                  className={PILL_INPUT}
+                  defaultValue={initial.deliveryDate}
+                  required
+                  aria-invalid={fieldError(state, "deliveryDate") ? true : undefined}
+                />
+              </Pill>
+              <Pill label="Via" htmlFor="source">
+                <NativeSelect
+                  id="source"
+                  name="source"
+                  className={PILL_INPUT}
+                  defaultValue={initial.source ?? "OFFICE"}
+                >
+                  {SOURCES.map((s) => (
+                    <option key={s.value} value={s.value}>
+                      {s.label}
+                    </option>
+                  ))}
+                </NativeSelect>
+              </Pill>
+            </>
           )}
         </div>
-      ) : null}
+        <FieldError id="deliveryDate-error" message={fieldError(state, "deliveryDate")} />
+        {notice}
 
-      <FormMessage state={state} />
-      <div className="flex flex-wrap gap-2">
-        <Button type="submit" disabled={saving || !context || lines.length === 0}>
-          {saving ? "Saving…" : counter ? "Save sale" : isNew ? "Book order" : "Save changes"}
-        </Button>
-        {counter ? (
-          <Button
-            type="submit"
-            name="intent"
-            value="print"
-            variant="outline"
-            disabled={saving || !context || lines.length === 0}
+        {/* Customer card: who, and what they owe after this order. */}
+        <div className="bg-card rounded-xl border shadow-xs">
+          <div className="grid items-center gap-x-6 gap-y-2 px-4 py-2.5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
+            <div className="min-w-0">
+              {showSearch ? (
+                <div className="flex items-start gap-2">
+                  <div className="min-w-0 flex-1">
+                    <Combobox
+                      label="Customer"
+                      labelClassName={HEADER_LABEL}
+                      inputClassName="h-10 text-base"
+                      inputRef={customerSearch}
+                      items={customers}
+                      getKey={(c) => c.id}
+                      rank={(c, q) =>
+                        rankText(
+                          q,
+                          null,
+                          c.name,
+                          c.shopName,
+                          c.phone,
+                          localPhone(c.phone),
+                          c.area?.name,
+                        )
+                      }
+                      render={(c) => (
+                        <span>
+                          <span className="font-medium">{c.name}</span>
+                          {c.shopName ? ` · ${c.shopName}` : ""}
+                          <span className="text-muted-foreground">
+                            {c.area ? ` · ${c.area.name}` : ""}
+                            {c.phone ? ` · ${c.phone}` : ""}
+                          </span>
+                        </span>
+                      )}
+                      onSelect={chooseCustomer}
+                      onNoMatch={startNewCustomer}
+                      noMatchLabel={(q) => `+ New customer “${q}”`}
+                      isExact={isSameCustomer}
+                      placeholder="Name, shop, phone or area — a new name adds a customer"
+                      autoFocus={!customerId}
+                    />
+                  </div>
+                  {changingCustomer && customer ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="mt-5 h-10"
+                      onClick={() => setChangingCustomer(false)}
+                    >
+                      Keep {customer.name}
+                    </Button>
+                  ) : null}
+                </div>
+              ) : newCustomer ? (
+                <NewCustomerFields
+                  state={state}
+                  value={newCustomer}
+                  onChange={(v) => setNewCustomer({ ...newCustomer, ...v })}
+                  onCancel={() => {
+                    setNewCustomer(null);
+                    setContext(null);
+                    setLines([]);
+                  }}
+                  areas={areas}
+                  counter={counter}
+                />
+              ) : (
+                <CustomerIdentity
+                  name={context?.customer.name ?? customer?.name ?? ""}
+                  details={
+                    context
+                      ? [context.customer.shopName, context.customer.areaName]
+                          .filter(Boolean)
+                          .join(" · ") || "No area"
+                      : (customer?.shopName ?? "")
+                  }
+                  flag={
+                    context?.customer.isFlagged
+                      ? `Flagged${context.customer.flagReason ? `: ${context.customer.flagReason}` : ""}`
+                      : null
+                  }
+                  onChange={isNew ? () => setChangingCustomer(true) : undefined}
+                />
+              )}
+              {/* Orders: the note sits under the customer, closed until needed (the counter sale
+                  has it in the top bar). */}
+              <div className="mt-2">
+                {counter ? null : noteOpen ? (
+                  <div className="flex min-w-0 items-center gap-2">
+                    <Label htmlFor="note" className={HEADER_LABEL}>
+                      Note
+                    </Label>
+                    <Input
+                      id="note"
+                      name="note"
+                      className="h-8 md:text-sm"
+                      defaultValue={initial.note}
+                      maxLength={500}
+                      autoFocus={!initial.note}
+                    />
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="text-muted-foreground hover:text-foreground text-sm"
+                    onClick={() => setNoteOpen(true)}
+                  >
+                    + Add a note
+                  </button>
+                )}
+              </div>
+            </div>
+            <div>
+              <BalancePanel
+                context={newCustomer ? null : context}
+                isNewCustomer={Boolean(newCustomer)}
+                loading={loading}
+                error={contextError}
+                credit={credit}
+                counter={counter}
+                extra={
+                  context && !newCustomer ? (
+                    <CompanyBalances context={context} byCompany={byCompany} />
+                  ) : null
+                }
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* The bill: a numbered grid, the main thing on the screen. */}
+      <section ref={sectionRef} aria-labelledby="lines-heading" className="space-y-1.5">
+        <h2 id="lines-heading" className="sr-only">
+          {counter ? "Sale" : "Order"} lines
+        </h2>
+        <div className="bg-card overflow-hidden rounded-xl border shadow-xs">
+          {/* Its height is fitted to the window (fitGridToWindow), so lines never push the page. */}
+          <div ref={gridScrollRef} className="h-[22rem] overflow-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/60 sticky top-0 z-10 backdrop-blur">
+                <tr>
+                  <GridTh className="w-10">#</GridTh>
+                  <GridTh className="w-full">Item</GridTh>
+                  <GridTh className="text-right">In stock</GridTh>
+                  <GridTh className="text-right">Qty</GridTh>
+                  <GridTh>Unit</GridTh>
+                  <GridTh className="text-right">Price</GridTh>
+                  <GridTh className="text-right">Disc / dz</GridTh>
+                  <GridTh className="text-right">Amount</GridTh>
+                  <GridTh className="w-8">
+                    <span className="sr-only">Remove</span>
+                  </GridTh>
+                </tr>
+              </thead>
+              <tbody>
+                {lines.map((line, i) => {
+                  const product = productById.get(line.productId);
+                  if (!product) return null;
+                  const qty = halfDozens(line.qty);
+                  const p = priced.find((x) => x.productId === line.productId);
+                  const short = qty !== null && qty > product.available;
+                  const error =
+                    fieldError(state, `lines.${i}.quantity`) ??
+                    (line.qty && qty === null
+                      ? "Whole or half dozens: 2, 2.5 or 2dz 6pk"
+                      : undefined);
+                  return (
+                    <tr key={line.productId} className="hover:bg-muted/30 group">
+                      <GridTd className="text-muted-foreground tabular-nums">{i + 1}</GridTd>
+                      {/* One line: a long name is cut, the full name shows on hover. */}
+                      <GridTd className="max-w-0 truncate">
+                        <label
+                          htmlFor={`qty-${product.id}`}
+                          className="font-medium"
+                          title={`${product.name} · ${product.code} · ${product.companyName}`}
+                        >
+                          {product.name}
+                        </label>
+                        <span className="text-muted-foreground ml-2 font-mono text-xs">
+                          {product.code}
+                        </span>
+                        <span className="text-muted-foreground text-xs">
+                          {" "}
+                          · {product.companyName}
+                        </span>
+                        <input type="hidden" name="productId" value={product.id} />
+                      </GridTd>
+                      <GridTd className="text-right whitespace-nowrap">
+                        {short ? (
+                          <Badge variant="destructive">
+                            Short {formatDozens(qty! - product.available)}
+                          </Badge>
+                        ) : (
+                          <StockPill packets={product.available} />
+                        )}
+                      </GridTd>
+                      <GridTd className="text-right">
+                        <Input
+                          id={`qty-${product.id}`}
+                          name="quantity"
+                          inputMode="decimal"
+                          autoComplete="off"
+                          className={cn(GRID_INPUT, "ml-auto w-20 font-semibold")}
+                          ref={(el) => {
+                            if (el) qtyInputs.current.set(product.id, el);
+                            else qtyInputs.current.delete(product.id);
+                          }}
+                          value={line.qty}
+                          onChange={(e) =>
+                            setLines((ls) =>
+                              ls.map((l) =>
+                                l.productId === line.productId ? { ...l, qty: e.target.value } : l,
+                              ),
+                            )
+                          }
+                          aria-invalid={error ? true : undefined}
+                          aria-describedby={error ? `qty-${product.id}-error` : undefined}
+                        />
+                        <FieldError id={`qty-${product.id}-error`} message={error} />
+                      </GridTd>
+                      <GridTd className="text-muted-foreground">Dozen</GridTd>
+                      <GridTd className="text-right tabular-nums">
+                        {formatMoney(product.saleRate)}
+                      </GridTd>
+                      <GridTd className="text-right">
+                        <DiscountCell
+                          line={line}
+                          product={product}
+                          priced={p}
+                          error={fieldError(state, `lines.${i}.discount`)}
+                          onChange={(discount) =>
+                            setLines((ls) =>
+                              ls.map((l) =>
+                                l.productId === line.productId ? { ...l, discount } : l,
+                              ),
+                            )
+                          }
+                        />
+                      </GridTd>
+                      <GridTd className="text-right font-semibold tabular-nums">
+                        {p ? formatMoney(p.netAmount) : "—"}
+                      </GridTd>
+                      <GridTd className="px-1">
+                        <button
+                          type="button"
+                          className="text-muted-foreground hover:text-destructive rounded px-1.5 py-0.5"
+                          aria-label={`Remove ${product.name}`}
+                          aria-keyshortcuts="Control+Delete"
+                          title="Remove (Ctrl+Delete in the dozens box)"
+                          tabIndex={-1}
+                          onClick={() =>
+                            setLines((ls) => ls.filter((l) => l.productId !== line.productId))
+                          }
+                        >
+                          ×
+                        </button>
+                      </GridTd>
+                    </tr>
+                  );
+                })}
+                {/* The entry row: type the next item here; it becomes a line on Enter. */}
+                <tr className="bg-brand/5">
+                  <GridTd className="border-l-brand border-l-2 font-semibold tabular-nums">
+                    {lines.length + 1}
+                  </GridTd>
+                  <GridTd colSpan={2}>
+                    {hasProducts ? (
+                      <Combobox
+                        label="Add product"
+                        hideLabel
+                        floating
+                        inputClassName="h-7 border-brand/50 bg-background focus-visible:border-brand focus-visible:ring-brand/20"
+                        items={products}
+                        getKey={(p) => p.id}
+                        rank={(p, q) => rankText(q, p.code, p.name, p.companyName)}
+                        render={(p) => (
+                          <span className="flex justify-between gap-3">
+                            <span>
+                              {p.name} <span className="font-mono text-xs">{p.code}</span>
+                              <span className="text-muted-foreground"> · {p.companyName}</span>
+                            </span>
+                            <span
+                              className={
+                                p.available <= 0
+                                  ? "text-destructive font-medium"
+                                  : "text-muted-foreground"
+                              }
+                            >
+                              {formatDozens(p.available)} free
+                            </span>
+                          </span>
+                        )}
+                        onSelect={addProduct}
+                        inputRef={productSearch}
+                        placeholder="Item code or name, then Enter"
+                      />
+                    ) : (
+                      <p className="text-muted-foreground flex h-7 items-center text-sm">
+                        {loading
+                          ? "Loading…"
+                          : needsWarehouse
+                            ? "Choose the warehouse first (From, at the top)."
+                            : "Choose the customer first."}
+                      </p>
+                    )}
+                  </GridTd>
+                  {Array.from({ length: GRID_COLUMNS - 4 }, (_, j) => (
+                    <GridTd key={j} />
+                  ))}
+                  <GridTd className="text-muted-foreground text-right">—</GridTd>
+                </tr>
+                {Array.from({ length: emptyRows }, (_, k) => (
+                  <tr
+                    key={`empty-${k}`}
+                    aria-hidden
+                    className="h-[33px]"
+                    onClick={() => focusEntryBox(productSearch.current)}
+                  >
+                    <GridTd className="text-muted-foreground/50 tabular-nums">
+                      {lines.length + 2 + k}
+                    </GridTd>
+                    {Array.from({ length: GRID_COLUMNS - 1 }, (_, j) => (
+                      <GridTd key={j} />
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="bg-muted/40 flex flex-wrap items-center justify-between gap-x-6 gap-y-1 border-t px-4 py-1.5">
+            <div className="text-muted-foreground flex flex-wrap items-center gap-x-2 text-sm">
+              <span>
+                {lines.length} {lines.length === 1 ? "item" : "items"}
+              </span>
+              {total.discountAmount.gt(0) ? (
+                <>
+                  <span aria-hidden>·</span>
+                  <span>
+                    Discount given{" "}
+                    <span className="text-foreground font-semibold tabular-nums">
+                      {formatMoney(total.discountAmount)}
+                    </span>
+                  </span>
+                </>
+              ) : null}
+              <span aria-hidden className="pointer-coarse:hidden">
+                ·
+              </span>
+              <span className="text-xs pointer-coarse:hidden">
+                <ShortcutHelp counter={counter} />
+              </span>
+            </div>
+            <p className="flex items-baseline gap-3">
+              {/* Total quantity next to the bill total, as large, so both are read together. */}
+              <span className={HEADER_LABEL}>Total qty</span>
+              <span className="text-2xl font-bold tracking-tight tabular-nums">
+                {formatDozens(total.quantity)}
+              </span>
+              <span aria-hidden className="bg-border mx-2 h-6 w-px self-center" />
+              <span className={HEADER_LABEL}>BILL TOTAL</span>
+              <span className="text-2xl font-bold tracking-tight tabular-nums">
+                {formatMoney(total.netAmount)}
+              </span>
+            </p>
+          </div>
+        </div>
+      </section>
+
+      {/* Pinned to the bottom of the window: payment, warnings and the save buttons. */}
+      <div
+        ref={footerRef}
+        className="bg-background/95 sticky bottom-0 z-20 -mx-3 space-y-2 border-t px-3 py-2 backdrop-blur sm:-mx-6 sm:px-6"
+      >
+        {credit?.over ? (
+          <div
+            role="alert"
+            className="border-destructive bg-destructive/5 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md border px-3 py-2 text-sm"
           >
-            Save and print bill
-          </Button>
+            <p className="font-medium">
+              This {counter ? "sale" : "order"} takes the customer {formatMoney(credit.over)} past
+              their credit limit of {formatMoney(credit.limit)}.
+            </p>
+            {canOverrideCredit ? (
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={allowOver}
+                  onChange={(e) => setAllowOver(e.target.checked)}
+                />
+                Allow past the credit limit
+              </label>
+            ) : counter ? (
+              <p>Take more payment now, or ask the owner to allow it.</p>
+            ) : (
+              <p>
+                You can still book it; it will wait for the owner&apos;s approval before dispatch.
+              </p>
+            )}
+          </div>
         ) : null}
-        {isNew ? (
-          <Button
-            type="submit"
-            name="intent"
-            value="next"
-            variant="outline"
-            disabled={saving || !context || lines.length === 0}
-          >
-            {counter ? "Save and enter next" : "Book and enter next"}
-          </Button>
-        ) : null}
-        <Button asChild variant="ghost">
-          <Link href={initial.orderId ? `/orders/${initial.orderId}` : "/orders"}>Cancel</Link>
-        </Button>
+
+        <FormMessage state={state} />
+
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          {counter && hasProducts ? (
+            <PaidNow
+              state={state}
+              paid={paid}
+              setPaid={setPaid}
+              paidFull={paidFull}
+              setPaidFull={setPaidFull}
+              method={method}
+              setMethod={setMethod}
+              total={total.netAmount.toString()}
+              onAccount={onAccount}
+            />
+          ) : null}
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <Button asChild variant="ghost" className="h-10 px-3">
+              <Link href={initial.orderId ? `/orders/${initial.orderId}` : "/orders"}>Cancel</Link>
+            </Button>
+            {isNew ? (
+              <Button
+                type="submit"
+                name="intent"
+                value="next"
+                variant="outline"
+                className="h-10"
+                disabled={cannotSave}
+                title={
+                  counter ? "Save, then enter the next sale" : "Book, then enter the next order"
+                }
+              >
+                {counter ? "Save & next" : "Book & next"}
+              </Button>
+            ) : null}
+            {counter ? (
+              <Button
+                type="submit"
+                name="intent"
+                value="print"
+                variant="outline"
+                className="h-10"
+                disabled={cannotSave}
+                title="Save and print the bill"
+              >
+                Save &amp; print
+              </Button>
+            ) : null}
+            <Button
+              type="submit"
+              disabled={cannotSave}
+              className="bg-brand text-brand-foreground hover:bg-brand/90 h-10 px-4"
+            >
+              {saving ? "Saving…" : counter ? "Save sale" : isNew ? "Book order" : "Save changes"}
+              {/* The amount too on wide screens; on a laptop the bar stays one line. */}
+              {!saving && lines.length > 0 ? (
+                <span className="hidden tabular-nums 2xl:inline">
+                  · {formatMoney(total.netAmount)}
+                </span>
+              ) : null}
+            </Button>
+          </div>
+        </div>
       </div>
     </form>
   );
 }
 
-/** The product's own discount as a hint: "4", "5%" or "none". */
+/**
+ * Focuses the entry row's box and scrolls the grid only as far as needed: the entry row stays at
+ * the bottom edge, so as many lines as possible stay in view (plain focus() may centre it).
+ */
+function focusEntryBox(el: HTMLInputElement | null) {
+  if (!el) return;
+  el.focus({ preventScroll: true });
+  el.closest("tr")?.scrollIntoView({ block: "nearest" });
+}
+
+/**
+ * Fits the bill grid's scroll area to the window: from where the grid starts down to the pinned
+ * bar, less what sits under the grid (totals, hints). So the header, the whole grid, the total and
+ * the bar always fit, whatever the header holds (a new customer, a warning) and however many
+ * lines there are; extra lines scroll inside the grid. Run after every render and on resize.
+ */
+function fitGridToWindow(
+  grid: HTMLElement | null,
+  section: HTMLElement | null,
+  footer: HTMLElement | null,
+) {
+  if (!grid || !section) return;
+  // Phones and narrow windows scroll the page as usual.
+  if (window.innerWidth < 768) {
+    grid.style.height = "";
+    return;
+  }
+  const box = grid.getBoundingClientRect();
+  const top = box.top + window.scrollY;
+  const under = section.getBoundingClientRect().bottom - box.bottom;
+  // 12px gap above the bar and the page's 24px bottom padding.
+  const room = window.innerHeight - top - under - (footer?.offsetHeight ?? 0) - 36;
+  // A fixed height (not just a maximum): the grid always fills the free space, like Busy.
+  grid.style.height = `${Math.max(MIN_GRID_HEIGHT, Math.floor(room))}px`;
+}
+
+/** The grid always shows at least five rows (header + 5 × 33 px); below that the page scrolls. */
+const MIN_GRID_HEIGHT = 200;
+
+/**
+ * Empty numbered rows after the lines, so the grid reads as a ledger and fills its space like a
+ * voucher screen; the grid's height is fixed to the window, so rows past it just scroll.
+ */
+const GRID_ROWS = 25;
+/** Columns of the bill grid: #, item, in stock, qty, unit, price, discount, amount, remove. */
+const GRID_COLUMNS = 9;
+/** Stock under this (10 dozen) shows amber. */
+const LOW_STOCK_PACKETS = 120;
+
+const HEADER_LABEL = "text-muted-foreground text-[11px] font-semibold tracking-wider uppercase";
+const HEADER_INPUT = "h-9 bg-background md:text-sm";
+/** An input inside a Pill: no border of its own, the pill draws it. */
+const PILL_INPUT =
+  "h-8 w-auto border-0 bg-transparent px-0 shadow-none focus-visible:ring-0 md:text-sm";
+/** Qty and discount boxes in the grid: read like text, a border on hover and focus. */
+const GRID_INPUT =
+  "h-7 border-transparent bg-transparent text-right tabular-nums shadow-none hover:border-input focus-visible:bg-background";
+
+/** A labelled box in the top bar: "FROM Shahdara Warehouse", "DATE 20/11/2026". */
+function Pill({
+  label,
+  htmlFor,
+  children,
+}: {
+  label: string;
+  htmlFor: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="bg-background focus-within:border-ring focus-within:ring-ring/40 flex h-9 items-center gap-2 rounded-md border px-2.5 focus-within:ring-2">
+      <label htmlFor={htmlFor} className={HEADER_LABEL}>
+        {label}
+      </label>
+      {children}
+    </div>
+  );
+}
+
+/** Stock free to sell, as a small pill: amber when low, red when none. */
+function StockPill({ packets }: { packets: number }) {
+  return (
+    <span
+      className={cn(
+        "rounded-full px-2 py-0.5 text-xs font-medium tabular-nums",
+        packets <= 0
+          ? "bg-destructive/15 text-destructive"
+          : packets < LOW_STOCK_PACKETS
+            ? "bg-warning/25 text-foreground"
+            : "bg-muted text-foreground",
+      )}
+    >
+      {formatDozens(packets)}
+    </span>
+  );
+}
+
+/** The keyboard shortcuts of the order screen. */
+function ShortcutHelp({ counter }: { counter: boolean }) {
+  const keys: [string, string][] = [
+    ["Enter", "add the item, then type dozens (3.5)"],
+    ["Enter / Tab Tab", "next item"],
+    ["Alt+R", "customer's discount on the line"],
+    ["Ctrl+Delete", "remove the line"],
+    ["Alt+L", "repeat last order"],
+    ["F2", "change the customer"],
+    ["Ctrl+Enter", counter ? "save the sale" : "book the order"],
+    ["Esc", "leave the box"],
+  ];
+  return (
+    <details className="relative">
+      <summary className="text-brand cursor-pointer font-medium underline underline-offset-2 select-none">
+        All shortcuts
+      </summary>
+      <dl className="bg-popover text-popover-foreground absolute bottom-full left-0 z-30 mb-2 grid w-max grid-cols-[auto_auto] gap-x-3 gap-y-1 rounded-md border p-3 text-xs shadow-md">
+        {keys.map(([key, what]) => (
+          <div key={key} className="contents">
+            <dt>
+              <Kbd>{key}</Kbd>
+            </dt>
+            <dd>{what}</dd>
+          </div>
+        ))}
+      </dl>
+    </details>
+  );
+}
+
+function GridTh({ children, className }: { children?: React.ReactNode; className?: string }) {
+  return (
+    <th
+      scope="col"
+      className={cn(
+        "text-muted-foreground border-b px-3 py-2 text-left text-[11px] font-semibold tracking-wider whitespace-nowrap uppercase",
+        className,
+      )}
+    >
+      {children}
+    </th>
+  );
+}
+
+function GridTd({
+  children,
+  className,
+  colSpan,
+}: {
+  children?: React.ReactNode;
+  className?: string;
+  colSpan?: number;
+}) {
+  return (
+    <td colSpan={colSpan} className={cn("border-b px-3 py-0.5 align-middle", className)}>
+      {children}
+    </td>
+  );
+}
+
+/** The product's own discount as a hint: "4", "5%" or "—". */
 function normalDiscount(product: Product) {
-  if (product.discountType === "NONE" || Number(product.discountValue) === 0) return "none";
+  if (product.discountType === "NONE" || Number(product.discountValue) === 0) return "—";
   return product.discountType === "PERCENT"
     ? `${Number(product.discountValue)}%`
     : String(Number(product.discountValue));
@@ -706,7 +1200,7 @@ function normalDiscount(product: Product) {
 /**
  * Discount / dz of one line: the customer's own discount on the product (rates are fixed). It
  * starts at their saved discount; blank uses the product's discount and slabs (the placeholder).
- * What will happen to the saved discount when the order is saved is shown under it.
+ * A change to the saved discount is noted under it.
  */
 function DiscountCell({
   line,
@@ -725,9 +1219,9 @@ function DiscountCell({
   const typed = readCustomerDiscount(line.discount, product.saleRate);
   const saved = product.customerDiscount;
   const message = error ?? typed.error;
+  // Only a change to the saved discount gets a note, so most lines stay one row tall.
   let note: React.ReactNode = null;
-  if (typed.discount && saved !== null && typed.discount.eq(saved))
-    note = <span>Customer&apos;s discount</span>;
+  if (typed.discount && saved !== null && typed.discount.eq(saved)) note = null;
   else if (typed.discount && saved !== null)
     note = <span>Saved {formatMoney(saved)} → changes</span>;
   else if (typed.discount) note = <span>New for this customer: saved</span>;
@@ -743,8 +1237,10 @@ function DiscountCell({
         Removes saved {formatMoney(saved)}
       </button>
     );
+  const amount =
+    priced && priced.discountAmount.gt(0) ? `−${formatMoney(priced.discountAmount)}` : null;
   return (
-    <div className="ml-auto w-32 space-y-1 text-left">
+    <div className="ml-auto w-24">
       <label htmlFor={id} className="sr-only">
         Discount per dozen for {product.name}
       </label>
@@ -753,9 +1249,9 @@ function DiscountCell({
         name="discount"
         inputMode="decimal"
         autoComplete="off"
-        className="h-8 text-right tabular-nums"
+        className={GRID_INPUT}
         placeholder={normalDiscount(product)}
-        title="This customer's discount per dozen. Blank: the product's discount and slabs."
+        title={`${amount ? `Discount on this line: ${amount}. ` : ""}This customer's discount per dozen. Blank: the product's discount and slabs.`}
         aria-keyshortcuts="Alt+R"
         value={line.discount ?? ""}
         onChange={(e) => onChange(e.target.value)}
@@ -763,15 +1259,217 @@ function DiscountCell({
         aria-describedby={message ? `${id}-error` : undefined}
       />
       <FieldError id={`${id}-error`} message={message} />
-      <p className="text-muted-foreground text-right text-xs tabular-nums">
-        {priced && priced.discountAmount.gt(0) ? `−${formatMoney(priced.discountAmount)}` : null}
-        {note ? <span className="block">{note}</span> : null}
-      </p>
+      {note ? (
+        <p className="text-muted-foreground mt-0.5 text-right text-[11px] leading-tight">{note}</p>
+      ) : null}
     </div>
   );
 }
 
-/** Name, phone and area of a customer created with this order. */
+/** Two letters for the customer's round badge: "Nadeem Mughal" → "NM". */
+function initials(name: string) {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  return (
+    (words[0]?.[0] ?? "") + (words.length > 1 ? (words.at(-1)?.[0] ?? "") : "")
+  ).toUpperCase();
+}
+
+/** The chosen customer: badge, name, shop and area, and "Change (F2)" on a new order. */
+function CustomerIdentity({
+  name,
+  details,
+  flag,
+  onChange,
+}: {
+  name: string;
+  details: string;
+  flag: string | null;
+  onChange?: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-3">
+      <span
+        aria-hidden
+        className="bg-brand/10 text-brand grid size-11 shrink-0 place-items-center rounded-full text-base font-bold"
+      >
+        {initials(name)}
+      </span>
+      <div className="min-w-0">
+        <p className="flex flex-wrap items-center gap-2 text-lg leading-tight font-semibold">
+          {name}
+          {flag ? <Badge variant="destructive">{flag}</Badge> : null}
+        </p>
+        <p className="text-muted-foreground truncate text-sm">{details}</p>
+      </div>
+      {onChange ? (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="ml-2"
+          onClick={onChange}
+          aria-keyshortcuts="F2"
+        >
+          Change <Kbd>F2</Kbd>
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * What the customer owes after this order, with how much of the credit limit that uses (green,
+ * amber past 80%, red past the limit), and the figures it is made of.
+ */
+function BalancePanel({
+  context,
+  isNewCustomer,
+  loading,
+  error,
+  credit,
+  counter,
+  extra,
+}: {
+  /** Shown at the end of the figures line (the "Balances by company" toggle). */
+  extra?: React.ReactNode;
+  context: OrderEntryContext | null;
+  isNewCustomer: boolean;
+  loading: boolean;
+  error: string | null;
+  credit: ReturnType<typeof checkCredit> | null;
+  counter: boolean;
+}) {
+  const shell = "lg:border-l lg:pl-6";
+  if (error)
+    return (
+      <p role="alert" className={cn(shell, "text-destructive text-sm")}>
+        {error}
+      </p>
+    );
+  if (isNewCustomer)
+    return (
+      <div className={cn(shell, "text-sm")}>
+        <p className={HEADER_LABEL}>Balance after this order</p>
+        <p className="text-muted-foreground mt-1">
+          A new customer: no balance yet and no credit limit.
+        </p>
+      </div>
+    );
+  if (!context)
+    return (
+      <div className={cn(shell, "text-muted-foreground text-sm")}>
+        {loading ? "Loading the customer…" : "Pick a customer to see what they owe."}
+      </div>
+    );
+  const limit = context.customer.creditLimit === null ? null : Number(context.customer.creditLimit);
+  const after = Number(credit?.exposure ?? context.pending);
+  const used = limit && limit > 0 ? Math.min(100, (after / limit) * 100) : 0;
+  const tone = credit?.over ? "bg-destructive" : used > 80 ? "bg-warning" : "bg-brand";
+  return (
+    <section aria-label="Customer balance" aria-busy={loading} className={cn(shell, "space-y-1")}>
+      {/* One line: label, the balance, what is left; the credit limit at the right. */}
+      <div className="flex flex-wrap items-baseline gap-x-3">
+        <p className={HEADER_LABEL}>Balance after</p>
+        <span
+          className={cn(
+            "text-2xl leading-tight font-bold tracking-tight tabular-nums",
+            credit?.over && "text-destructive",
+          )}
+        >
+          {formatMoney(after)}
+        </span>
+        {limit !== null ? (
+          <span
+            className={cn("text-xs", credit?.over ? "text-destructive" : "text-muted-foreground")}
+          >
+            {credit?.over
+              ? `${formatMoney(credit.over)} over the limit`
+              : `${formatMoney(Math.max(limit - after, 0))} still available`}
+          </span>
+        ) : null}
+        <span className="text-muted-foreground ml-auto text-xs">
+          {limit === null ? "No credit limit" : `Limit ${formatMoney(limit)}`}
+        </span>
+      </div>
+      {limit !== null ? (
+        <div
+          className="bg-muted h-1.5 overflow-hidden rounded-full"
+          role="meter"
+          aria-label="Credit limit used"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(used)}
+        >
+          <div className={cn("h-full rounded-full", tone)} style={{ width: `${used}%` }} />
+        </div>
+      ) : null}
+      <dl className="text-muted-foreground flex flex-wrap gap-x-4 gap-y-0.5 text-xs">
+        <div className="flex gap-1.5">
+          <dt>Pending now</dt>
+          <dd className="text-foreground font-semibold tabular-nums">
+            {formatMoney(context.pending)}
+          </dd>
+        </div>
+        <div className="flex gap-1.5">
+          <dt>Other open orders</dt>
+          <dd className="text-foreground font-semibold tabular-nums">
+            {formatMoney(context.openOrders)}
+          </dd>
+        </div>
+        <div className="flex gap-1.5">
+          <dt>This order{counter ? " (on account)" : ""}</dt>
+          <dd className="text-foreground font-semibold tabular-nums">
+            {formatMoney(credit?.thisOrder ?? "0")}
+          </dd>
+        </div>
+        {extra ? <div className="ml-auto">{extra}</div> : null}
+      </dl>
+    </section>
+  );
+}
+
+/** "Balances by company": what is pending per company, and this order's split when it has several. */
+function CompanyBalances({
+  context,
+  byCompany,
+}: {
+  context: OrderEntryContext;
+  byCompany: Map<string, { netAmount: { toString(): string } }>;
+}) {
+  const thisOrder = [...byCompany];
+  if (context.pendingByCompany.length === 0 && thisOrder.length < 2) return null;
+  return (
+    <details className="group relative text-xs">
+      <summary className="text-muted-foreground hover:text-foreground w-fit cursor-pointer list-none select-none">
+        Balances by company <span className="inline-block group-open:rotate-180">▾</span>
+      </summary>
+      <dl className="bg-popover text-popover-foreground absolute top-full right-0 z-30 mt-1 grid w-max max-w-xl gap-x-6 gap-y-1 rounded-md border p-3 shadow-md sm:grid-cols-2">
+        {context.pendingByCompany.map((p) => (
+          <div key={p.companyId} className="flex justify-between gap-3">
+            <dt className="text-muted-foreground">Pending · {p.companyName}</dt>
+            <dd className="font-medium tabular-nums">{formatMoney(p.amount)}</dd>
+          </div>
+        ))}
+        {thisOrder.length > 1
+          ? thisOrder.map(([companyId, t]) => (
+              <div key={companyId} className="flex justify-between gap-3">
+                <dt className="text-muted-foreground">
+                  This order ·{" "}
+                  {context.products.find((p) => p.companyId === companyId)?.companyName}
+                </dt>
+                <dd className="font-medium tabular-nums">{formatMoney(t.netAmount)}</dd>
+              </div>
+            ))
+          : null}
+      </dl>
+    </details>
+  );
+}
+
+/**
+ * A customer created with this order: name, phone (optional) and area, in the customer card. The
+ * warehouse (for a counter customer without an area) is the "From" box at the top.
+ */
 function NewCustomerFields({
   state,
   value,
@@ -779,9 +1477,6 @@ function NewCustomerFields({
   onCancel,
   areas,
   counter,
-  warehouses,
-  warehouseId,
-  setWarehouseId,
 }: {
   state: ActionState;
   value: { name: string; phone: string; areaId: string };
@@ -789,85 +1484,90 @@ function NewCustomerFields({
   onCancel: () => void;
   areas: { id: string; name: string; warehouseName: string }[];
   counter: boolean;
-  warehouses: { id: string; name: string }[];
-  warehouseId: string;
-  setWarehouseId: (id: string) => void;
 }) {
   const err = (name: string) => fieldError(state, name);
+  // The warehouse after each area only helps when areas are in more than one.
+  const manyWarehouses = new Set(areas.map((a) => a.warehouseName)).size > 1;
   return (
-    <fieldset className="space-y-3 rounded-lg border border-dashed p-3">
-      <legend className="px-1 text-sm font-medium">New customer</legend>
-      <div className="grid gap-3 sm:grid-cols-3">
-        <div className="space-y-1.5">
-          <Label htmlFor="new-customer-phone">Phone</Label>
-          <Input
-            id="new-customer-phone"
-            name="newCustomerPhone"
-            type="tel"
-            inputMode="tel"
-            placeholder="0300 1234567"
-            autoFocus={!value.phone}
-            value={value.phone}
-            onChange={(e) => onChange({ phone: e.target.value })}
-            aria-invalid={err("newCustomerPhone") ? true : undefined}
-          />
-          <p className="text-muted-foreground text-xs">Saved as +92</p>
-          <FieldError id="new-customer-phone-error" message={err("newCustomerPhone")} />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="new-customer-name">Name</Label>
+    <div role="group" aria-labelledby="new-customer-title" className="space-y-1.5">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3">
+        <p
+          id="new-customer-title"
+          className="flex items-center gap-2 text-sm font-semibold"
+          title={`Saved as a retailer with this ${counter ? "sale" : "order"}. If a customer already has this name or phone, it goes to them instead.`}
+        >
+          <span className="bg-brand/10 text-brand rounded px-1.5 py-0.5 text-[11px] tracking-wider uppercase">
+            New
+          </span>
+          New customer
+        </p>
+        <button
+          type="button"
+          className="text-muted-foreground hover:text-foreground text-xs underline underline-offset-2"
+          onClick={onCancel}
+        >
+          Cancel
+        </button>
+      </div>
+      <div className="grid grid-cols-6 items-start gap-x-3 gap-y-2">
+        <div className={cn("col-span-6 space-y-1", "sm:col-span-2")}>
+          <Label htmlFor="new-customer-name" className={HEADER_LABEL}>
+            Name
+          </Label>
           <Input
             id="new-customer-name"
             name="newCustomerName"
             maxLength={120}
-            autoFocus={Boolean(value.phone)}
+            className={HEADER_INPUT}
+            autoFocus={!value.name}
             value={value.name}
             onChange={(e) => onChange({ name: e.target.value })}
             aria-invalid={err("newCustomerName") ? true : undefined}
           />
           <FieldError id="new-customer-name-error" message={err("newCustomerName")} />
         </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="new-customer-area">Area{counter ? " (optional)" : ""}</Label>
+        <div className="col-span-3 space-y-1 sm:col-span-2">
+          <Label htmlFor="new-customer-phone" className={HEADER_LABEL}>
+            Phone
+          </Label>
+          <Input
+            id="new-customer-phone"
+            name="newCustomerPhone"
+            type="tel"
+            inputMode="tel"
+            className={HEADER_INPUT}
+            placeholder="Optional"
+            title="Optional; saved as +92"
+            autoFocus={Boolean(value.name) && !value.phone}
+            value={value.phone}
+            onChange={(e) => onChange({ phone: e.target.value })}
+            aria-invalid={err("newCustomerPhone") ? true : undefined}
+          />
+          <FieldError id="new-customer-phone-error" message={err("newCustomerPhone")} />
+        </div>
+        {/* Optional on the counter (a walk-in needs none); a delivery needs it for the route. */}
+        <div className="col-span-3 space-y-1 sm:col-span-2">
+          <Label htmlFor="new-customer-area" className={HEADER_LABEL}>
+            Area {counter ? <span className="font-normal opacity-75">· optional</span> : null}
+          </Label>
           <NativeSelect
             id="new-customer-area"
             name="newCustomerAreaId"
+            className={HEADER_INPUT}
             value={value.areaId}
             onChange={(e) => onChange({ areaId: e.target.value })}
           >
             <option value="">{counter ? "No area" : "Choose the area"}</option>
             {areas.map((a) => (
               <option key={a.id} value={a.id}>
-                {a.name} · {a.warehouseName}
+                {a.name}
+                {manyWarehouses ? ` · ${a.warehouseName}` : ""}
               </option>
             ))}
           </NativeSelect>
         </div>
-        {counter && !value.areaId && warehouses.length > 1 ? (
-          <div className="space-y-1.5">
-            <Label htmlFor="new-customer-warehouse">Warehouse</Label>
-            <NativeSelect
-              id="new-customer-warehouse"
-              value={warehouseId}
-              onChange={(e) => setWarehouseId(e.target.value)}
-            >
-              {warehouses.map((w) => (
-                <option key={w.id} value={w.id}>
-                  {w.name}
-                </option>
-              ))}
-            </NativeSelect>
-          </div>
-        ) : null}
       </div>
-      <p className="text-muted-foreground text-xs">
-        Saved as a retailer with this order. If a customer already has this phone, the order goes to
-        them instead.{" "}
-        <button type="button" className="underline underline-offset-2" onClick={onCancel}>
-          Cancel new customer
-        </button>
-      </p>
-    </fieldset>
+    </div>
   );
 }
 
@@ -877,7 +1577,10 @@ const METHODS = [
   { value: "ONLINE", label: "Online" },
 ];
 
-/** Counter sale: what the customer pays now; the rest goes on their account. */
+/**
+ * Counter sale: what the customer pays now (Full = the whole bill), how, and what goes on their
+ * account. In the pinned bar beside the save buttons.
+ */
 function PaidNow({
   state,
   paid,
@@ -899,12 +1602,22 @@ function PaidNow({
   total: string;
   onAccount: number;
 }) {
-  const field = (name: string, label: string, props: React.ComponentProps<typeof Input> = {}) => (
-    <div className="space-y-1.5">
-      <Label htmlFor={`counter-${name}`}>{label}</Label>
+  const extra = (
+    name: string,
+    label: string,
+    width: string,
+    props: React.ComponentProps<typeof Input> = {},
+  ) => (
+    <div className={width}>
+      <Label htmlFor={`counter-${name}`} className="sr-only">
+        {label}
+      </Label>
       <Input
         id={`counter-${name}`}
         name={name}
+        className="h-10 md:text-sm"
+        placeholder={label}
+        title={label}
         aria-invalid={fieldError(state, name) ? true : undefined}
         {...props}
       />
@@ -912,145 +1625,79 @@ function PaidNow({
     </div>
   );
   return (
-    <fieldset className="max-w-4xl space-y-3 rounded-lg border p-4">
-      <legend className="px-1 text-sm font-medium">Paid now</legend>
-      <div className="grid gap-4 sm:grid-cols-4">
-        {field("paidAmount", "Amount paid", {
-          inputMode: "decimal",
-          autoComplete: "off",
-          value: paidFull ? total : paid,
-          readOnly: paidFull,
-          onChange: (e) => setPaid(e.target.value),
-          placeholder: "0",
-        })}
-        <div className="space-y-1.5">
-          <Label htmlFor="counter-method">How</Label>
-          <NativeSelect
-            id="counter-method"
-            name="method"
-            value={method}
-            onChange={(e) => setMethod(e.target.value)}
-          >
-            {METHODS.map((m) => (
-              <option key={m.value} value={m.value}>
-                {m.label}
-              </option>
-            ))}
-          </NativeSelect>
-        </div>
-        {method === "CHEQUE" ? (
-          <>
-            {field("chequeNo", "Cheque no.", { maxLength: 30 })}
-            {field("bankName", "Bank", { maxLength: 60 })}
-            {field("chequeDate", "Cheque date", { type: "date" })}
-          </>
-        ) : method === "ONLINE" ? (
-          field("reference", "Reference", { maxLength: 80 })
-        ) : null}
-      </div>
-      <div className="flex flex-wrap gap-2 text-sm">
-        <label className="flex items-center gap-2 font-medium">
-          <input
-            type="checkbox"
-            className="size-4"
-            checked={paidFull}
-            onChange={(e) => {
-              setPaidFull(e.target.checked);
-              if (!e.target.checked) setPaid("");
-            }}
-          />
-          Paid in full ({formatMoney(total)})
+    <fieldset className="flex flex-wrap items-center gap-x-3 gap-y-2">
+      <legend className="sr-only">Paid now</legend>
+      <div className="flex items-center gap-3">
+        <label htmlFor="counter-paidAmount" className={HEADER_LABEL}>
+          Paid now
         </label>
-        <p className="self-center" aria-live="polite">
-          On the customer&apos;s account:{" "}
-          <span className="font-medium tabular-nums">{formatMoney(onAccount)}</span>
-        </p>
+        <div className="bg-background focus-within:border-ring focus-within:ring-ring/40 flex h-10 items-center gap-1 rounded-md border pr-1 pl-3 focus-within:ring-2">
+          <span className="text-muted-foreground text-sm">Rs</span>
+          <input
+            id="counter-paidAmount"
+            name="paidAmount"
+            inputMode="decimal"
+            autoComplete="off"
+            className="w-20 bg-transparent text-lg font-semibold tabular-nums outline-none"
+            value={paidFull ? total : paid}
+            readOnly={paidFull}
+            placeholder="0"
+            onChange={(e) => setPaid(e.target.value)}
+            aria-invalid={fieldError(state, "paidAmount") ? true : undefined}
+          />
+          <button
+            type="button"
+            aria-pressed={paidFull}
+            title="The customer pays the whole bill now"
+            className={cn(
+              "rounded px-2 py-1 text-xs font-semibold",
+              paidFull ? "bg-brand/15 text-brand" : "text-muted-foreground hover:bg-muted",
+            )}
+            onClick={() => {
+              setPaidFull(!paidFull);
+              if (paidFull) setPaid("");
+            }}
+          >
+            Full
+          </button>
+        </div>
+        <FieldError id="counter-paidAmount-error" message={fieldError(state, "paidAmount")} />
+      </div>
+      <div
+        role="radiogroup"
+        aria-label="How"
+        className="bg-muted flex h-10 items-center rounded-md p-1"
+      >
+        {METHODS.map((m) => (
+          <label
+            key={m.value}
+            className="has-[:checked]:bg-background has-[:focus-visible]:ring-ring/50 cursor-pointer rounded px-2.5 py-1.5 text-sm has-[:checked]:font-medium has-[:checked]:shadow-xs has-[:focus-visible]:ring-2"
+          >
+            <input
+              type="radio"
+              name="method"
+              value={m.value}
+              className="sr-only"
+              checked={method === m.value}
+              onChange={() => setMethod(m.value)}
+            />
+            {m.label}
+          </label>
+        ))}
+      </div>
+      {method === "CHEQUE" ? (
+        <>
+          {extra("chequeNo", "Cheque no.", "w-28", { maxLength: 30 })}
+          {extra("bankName", "Bank", "w-32", { maxLength: 60 })}
+          {extra("chequeDate", "Cheque date", "w-36", { type: "date" })}
+        </>
+      ) : method === "ONLINE" ? (
+        extra("reference", "Reference (bank, Easypaisa …)", "w-52", { maxLength: 80 })
+      ) : null}
+      <div aria-live="polite">
+        <p className={HEADER_LABEL}>Goes on account</p>
+        <p className="text-xl leading-tight font-bold tabular-nums">{formatMoney(onAccount)}</p>
       </div>
     </fieldset>
-  );
-}
-
-function CustomerPanel({
-  context,
-  loading,
-  error,
-  credit,
-  byCompany,
-  counter,
-}: {
-  counter: boolean;
-  context: OrderEntryContext | null;
-  loading: boolean;
-  error: string | null;
-  credit: ReturnType<typeof checkCredit> | null;
-  byCompany: Map<string, { netAmount: { toString(): string } }>;
-}) {
-  if (error)
-    return (
-      <p role="alert" className="text-destructive text-sm">
-        {error}
-      </p>
-    );
-  if (!context) {
-    return (
-      <div className="text-muted-foreground rounded-lg border border-dashed p-4 text-sm">
-        {loading ? "Loading…" : "Pick a customer to see their balance and credit limit."}
-      </div>
-    );
-  }
-  const c = context.customer;
-  return (
-    <aside
-      aria-label="Customer balance"
-      className="space-y-3 rounded-lg border p-4 text-sm"
-      aria-busy={loading}
-    >
-      <div>
-        <p className="font-medium">{c.name}</p>
-        <p className="text-muted-foreground">
-          {[c.shopName, c.areaName].filter(Boolean).join(" · ") || "No area"}
-        </p>
-        {c.isFlagged ? (
-          <Badge variant="destructive" className="mt-1">
-            Flagged{c.flagReason ? `: ${c.flagReason}` : ""}
-          </Badge>
-        ) : null}
-      </div>
-      <dl className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-1">
-        <dt>Pending now</dt>
-        <dd className="text-right font-medium tabular-nums">{formatMoney(context.pending)}</dd>
-        {context.pendingByCompany.map((p) => (
-          <div key={p.companyId} className="text-muted-foreground contents">
-            <dt className="pl-3">{p.companyName}</dt>
-            <dd className="text-right tabular-nums">{formatMoney(p.amount)}</dd>
-          </div>
-        ))}
-        <dt>Other open orders</dt>
-        <dd className="text-right tabular-nums">{formatMoney(context.openOrders)}</dd>
-        <dt>This order{counter ? " (on account)" : ""}</dt>
-        <dd className="text-right tabular-nums">{formatMoney(credit?.thisOrder ?? "0")}</dd>
-        {[...byCompany].length > 1
-          ? [...byCompany].map(([companyId, t]) => (
-              <div key={companyId} className="text-muted-foreground contents">
-                <dt className="pl-3">
-                  {context.products.find((p) => p.companyId === companyId)?.companyName}
-                </dt>
-                <dd className="text-right tabular-nums">{formatMoney(t.netAmount)}</dd>
-              </div>
-            ))
-          : null}
-        <dt className="font-medium">After this order</dt>
-        <dd className="text-right font-medium tabular-nums">
-          {formatMoney(credit?.exposure ?? context.pending)}
-        </dd>
-        <dt>Credit limit</dt>
-        <dd className="text-right tabular-nums">
-          {c.creditLimit === null ? "No limit" : formatMoney(c.creditLimit)}
-        </dd>
-      </dl>
-      {credit?.over ? (
-        <Badge variant="destructive">Over limit by {formatMoney(credit.over)}</Badge>
-      ) : null}
-    </aside>
   );
 }

@@ -37,6 +37,8 @@ export const businessSettingsSchema = z
     compactBills: z
       .preprocess((v) => v === true || v === "on" || v === "true", z.boolean())
       .default(false),
+    /** At the foot of every bill page, e.g. "Returns and claims within one week". */
+    billNote: optionalText(200),
   })
   .superRefine((s, ctx) => {
     if (s.twoBillsPerA4 && s.twoCopiesPerA5)

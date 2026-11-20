@@ -232,6 +232,7 @@ describe("validateCustomerRows", () => {
       ["golden crisp", "c2"],
     ]),
     existingKeys: new Set([customerKey("Existing Shop", "0300-1111111")]),
+    existingNames: new Set(["existing shop"]),
   };
   const headers = [...templateHeaders("customers", ["Crunchy Bites Foods", "Golden Crisp"])];
   /** A row with only name, phone, area and warehouse filled in. */
@@ -348,16 +349,23 @@ describe("validateCustomerRows", () => {
           [...row("existing shop", "03001111111", "Nowhere"), ""],
           [...row("Twin", "0311-2222222"), ""],
           [...row("Twin", "0311 2222222"), ""],
+          // Same name as a customer here or earlier in the file, another phone: names are unique.
+          [...row("EXISTING  Shop", "0300-9999999"), ""],
+          [...row("twin", "0311-3333333"), ""],
         ],
       },
       lookups,
     );
-    expect(rows.map((r) => r.status)).toEqual(["error", "skip", "new", "error"]);
+    expect(rows.map((r) => r.status)).toEqual(["error", "skip", "new", "error", "error", "error"]);
     expect(rows[0]!.errors).toEqual([
       "Type: use Retailer, Wholesaler, Dealer or Bike supplier",
       'Opening: Ghost Foods: "Ghost Foods" is not an active company',
     ]);
     expect(rows[1]).toMatchObject({ errors: [], note: "Already there" });
-    expect(rows[3]!.errors).toEqual(["This customer appears more than once in the file"]);
+    expect(rows[3]!.errors).toEqual(["This customer name appears more than once in the file"]);
+    expect(rows[4]!.errors).toEqual([
+      "There is already a customer with this name; customer names must be different",
+    ]);
+    expect(rows[5]!.errors).toEqual(["This customer name appears more than once in the file"]);
   });
 });
