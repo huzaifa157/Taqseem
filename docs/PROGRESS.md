@@ -2,6 +2,15 @@
 
 Running log of what has been built, decisions taken, and open items. Newest first.
 
+## Cloud backup on a weak connection: no stuck first copy — done
+
+Seen on the office laptop when it switched to the new Neon project: the first full copy lost its connection halfway (weak internet). Neon kept that `pg_restore` session open, "idle in transaction" with its locks, and the laptop's next try waited behind it with no end (fixed by hand by ending the orphan session; the copy then finished: 41 tables, 1 business, 56 products).
+- **Session limits on every cloud session** (`connectCloud`, and `pg_restore` via `PGOPTIONS`, `CLOUD_SESSION_OPTIONS`): `lock_timeout` 1 minute, `idle_in_transaction_session_timeout` 2 minutes. An orphaned session now closes itself, and a try waits at most a minute for a lock, then fails and is tried again later. Neon accepts these startup options (checked).
+- **A failed first copy waits** 15 minutes before the next try (`failedRecently`, shared with the daily backup), instead of a try every minute. Turning backup on (or changing the database) clears the previous database's error time, so its first copy starts at once.
+- The sync integration tests now also skip themselves when the test server is not PostgreSQL 17 (they started running against the usual PostgreSQL 16 test database once a built installer put pg_dump in `dist\package`).
+- Tests: `failedRecently` unit test; integration tests for the session limits and the first-copy wait (13 sync tests pass on PostgreSQL 17; skipped on 16).
+- The office laptop needs this installer as an **update** (keeps data).
+
 ## Installer built: TaqseemSetup-0.1.0.exe — done
 
 - `pnpm package:windows` → `dist\TaqseemSetup-0.1.0.exe` (60 MB): Next.js 16.4.6 standalone, Node 24.14, PostgreSQL 17.10 with pg_dump / pg_restore 17.10, tools including the new `restore.mjs`, all migrations up to `20261121090000_tenant_bill_note`. Inno Setup 6.7.3 installed for the user by winget; the new wizard page compiled.

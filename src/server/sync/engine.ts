@@ -24,7 +24,7 @@ import { join } from "node:path";
 
 import pg from "pg";
 
-import { backupDue, backupTime } from "../../lib/backup-schedule";
+import { backupDue, backupTime, failedRecently } from "../../lib/backup-schedule";
 
 export const SYNC_SCHEMA = "taqseem_sync";
 export const CLOUD_MARK_SCHEMA = "taqseem_sync_target";
@@ -64,12 +64,25 @@ export function describeUrl(url: string): string {
  */
 const PUBLIC_PATH = "SET search_path TO public";
 
-/** A connected client for a cloud database, with the search path set. */
+/**
+ * Limits for every cloud session (ours, and pg_restore's through PGOPTIONS). A copy whose
+ * connection drops halfway (weak office internet) can leave its session open on the cloud server,
+ * "idle in transaction" and holding locks, and the next try then waited behind it for good. Now
+ * such a session is closed after 2 minutes, and a try waits at most 1 minute for a lock before it
+ * fails (and is tried again later).
+ */
+const CLOUD_LOCK_TIMEOUT_MS = 60_000;
+const CLOUD_IDLE_IN_TRANSACTION_MS = 120_000;
+export const CLOUD_SESSION_OPTIONS = `-c lock_timeout=${CLOUD_LOCK_TIMEOUT_MS} -c idle_in_transaction_session_timeout=${CLOUD_IDLE_IN_TRANSACTION_MS}`;
+
+/** A connected client for a cloud database, with the search path and session limits set. */
 export async function connectCloud(url: string): Promise<pg.Client> {
   const cloud = new pg.Client({ connectionString: libpqUrl(url), connectionTimeoutMillis: 15_000 });
   await cloud.connect();
   try {
     await cloud.query(PUBLIC_PATH);
+    await cloud.query(`SET lock_timeout = ${CLOUD_LOCK_TIMEOUT_MS}`);
+    await cloud.query(`SET idle_in_transaction_session_timeout = ${CLOUD_IDLE_IN_TRANSACTION_MS}`);
   } catch (error) {
     await cloud.end().catch(() => {});
     throw error;
@@ -210,9 +223,9 @@ async function cloudOwner(cloud: Db): Promise<string | null> {
   return owner.rows[0]?.id ?? null;
 }
 
-function run(cmd: string, args: string[]) {
+function run(cmd: string, args: string[], env: Record<string, string> = {}) {
   return new Promise<string>((resolve, reject) => {
-    const child = spawn(cmd, args, { windowsHide: true });
+    const child = spawn(cmd, args, { windowsHide: true, env: { ...process.env, ...env } });
     let out = "";
     let err = "";
     child.stdout.on("data", (d) => (out += d));
@@ -307,15 +320,19 @@ async function initialCopy(
         )
         .join("\n"),
     );
-    await run(tool(o.pgBin, "pg_restore"), [
-      "--no-owner",
-      "--no-privileges",
-      "--single-transaction",
-      "--exit-on-error",
-      `--use-list=${list}`,
-      `--dbname=${libpqUrl(o.cloudUrl)}`,
-      dump,
-    ]);
+    await run(
+      tool(o.pgBin, "pg_restore"),
+      [
+        "--no-owner",
+        "--no-privileges",
+        "--single-transaction",
+        "--exit-on-error",
+        `--use-list=${list}`,
+        `--dbname=${libpqUrl(o.cloudUrl)}`,
+        dump,
+      ],
+      { PGOPTIONS: CLOUD_SESSION_OPTIONS },
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -598,6 +615,12 @@ export async function syncIfDue(o: SyncOptions, now = new Date()): Promise<Sched
     if (cfg.enabled !== "true" || !cfg.cloud_url || !cfg.install_id) return { status: "off" };
     await installTriggers(local);
     const firstCopy = cfg.copied_to !== fingerprint(cfg.cloud_url);
+    // A first copy that failed (weak internet) waits like a backup does, not a try every minute.
+    if (
+      firstCopy &&
+      failedRecently({ now, lastBackupAt: cfg.last_sync_at, lastErrorAt: cfg.last_error_at })
+    )
+      return { status: "waiting" };
     if (!firstCopy) {
       const due = backupDue({
         now,

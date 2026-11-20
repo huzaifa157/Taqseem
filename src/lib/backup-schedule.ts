@@ -93,9 +93,22 @@ export function backupDue(s: {
   const slot = lastScheduledAt(s.now, s.time, s.timeZone).getTime();
   const backup = time(s.lastBackupAt);
   if (backup !== null && backup >= slot) return false;
+  return !failedRecently(s);
+}
+
+/**
+ * A try failed less than BACKUP_RETRY_MS ago (and nothing has worked since): wait before the next.
+ * Also holds back a first full copy that keeps failing, instead of a try every minute.
+ */
+export function failedRecently(s: {
+  now: Date;
+  lastBackupAt: string | null | undefined;
+  lastErrorAt: string | null | undefined;
+}): boolean {
+  const backup = time(s.lastBackupAt);
   const error = time(s.lastErrorAt);
   const failedSince = error !== null && (backup === null || error > backup);
-  return !(failedSince && s.now.getTime() - error! < BACKUP_RETRY_MS);
+  return failedSince && s.now.getTime() - error! < BACKUP_RETRY_MS;
 }
 
 /**

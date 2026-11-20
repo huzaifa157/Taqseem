@@ -135,7 +135,9 @@ export async function enableCloudSync(ctx: ServiceCtx, input: unknown) {
       enabled: "true",
       // Another database gets its own full copy.
       copied_to: sameTarget ? (cfg.copied_to ?? null) : null,
+      // A problem with the previous database must not hold the new one's first copy back.
       last_error: null,
+      last_error_at: null,
     });
   });
   await writeAudit(ctx.db, ctx.user, {

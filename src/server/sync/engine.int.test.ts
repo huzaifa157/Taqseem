@@ -17,6 +17,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
   checkCloud,
+  CLOUD_SESSION_OPTIONS,
+  connectCloud,
   libpqUrl,
   missingInCloud,
   readConfig,
@@ -93,7 +95,27 @@ const OFFLINE_NOTE = {
 
 const rows = async (db: pg.Client, sql: string) => (await db.query(sql)).rows;
 
-describe.skipIf(!PG_BIN)("cloud sync (office → its own cloud database)", () => {
+/**
+ * The cloud side needs PostgreSQL 17 or newer (MIN_CLOUD_VERSION; the test server plays both
+ * sides), and pg_dump 17 cannot read anything newer than itself. A developer's usual test database
+ * may be older (PostgreSQL 16): then these tests are skipped, like without pg_dump. Run them with
+ * TEST_DATABASE_URL on a PostgreSQL 17 server and PG_BIN pointing at pg_dump 17.
+ */
+const SERVER_17 = await (async () => {
+  if (!process.env.TEST_DATABASE_URL) return false;
+  const c = new pg.Client({ connectionString: admin });
+  try {
+    await c.connect();
+    const { rows: r } = await c.query(`SELECT current_setting('server_version_num') AS v`);
+    return Math.floor(Number(r[0].v) / 10000) === 17;
+  } catch {
+    return false;
+  } finally {
+    await c.end().catch(() => {});
+  }
+})();
+
+describe.skipIf(!PG_BIN || !SERVER_17)("cloud sync (office → its own cloud database)", () => {
   beforeAll(async () => {
     await onServer(`CREATE DATABASE ${LOCAL}`);
     await onServer(`CREATE DATABASE ${CLOUD}`);
@@ -383,6 +405,46 @@ describe.skipIf(!PG_BIN)("cloud sync (office → its own cloud database)", () =>
     await local.query(`UPDATE "Warehouse" SET name = 'Second Store' WHERE id = 'w2'`);
     expect(await sync()).toMatchObject({ status: "done", sent: 1 });
   }, 120_000);
+
+  it("limits cloud sessions, so a dropped copy cannot block the next one for good", async () => {
+    const c = await connectCloud(urlFor(CLOUD));
+    try {
+      expect(
+        await rows(
+          c,
+          `SELECT current_setting('lock_timeout') AS lock,
+                  current_setting('idle_in_transaction_session_timeout') AS idle`,
+        ),
+      ).toEqual([{ lock: "1min", idle: "2min" }]);
+    } finally {
+      await c.end();
+    }
+    // pg_restore gets the same limits through PGOPTIONS.
+    expect(CLOUD_SESSION_OPTIONS).toBe(
+      "-c lock_timeout=60000 -c idle_in_transaction_session_timeout=120000",
+    );
+  });
+
+  it("waits after a failed first copy instead of trying every minute", async () => {
+    const opts = { localUrl: urlFor(LOCAL), migrationsDir: MIGRATIONS, pgBin: PG_BIN };
+    const before = await readConfig(local);
+    // Another cloud database (it does not exist, as if out of reach): a first copy is due, and fails.
+    await writeConfig(local, {
+      cloud_url: urlFor(`sync_missing_${suffix}`),
+      last_error: null,
+      last_error_at: null,
+    });
+    try {
+      expect((await syncIfDue(opts)).status).toBe("error");
+      expect(await syncIfDue(opts)).toEqual({ status: "waiting" });
+    } finally {
+      await writeConfig(local, {
+        cloud_url: before.cloud_url!,
+        last_error: null,
+        last_error_at: null,
+      });
+    }
+  }, 60_000);
 
   it("restores a new office computer from the cloud copy, then carries on syncing", async () => {
     await onServer(`CREATE DATABASE ${NEW}`);

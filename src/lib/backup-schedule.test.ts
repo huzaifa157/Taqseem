@@ -5,6 +5,7 @@ import {
   backupDue,
   backupOverdue,
   backupTime,
+  failedRecently,
   lastScheduledAt,
   nextScheduledAt,
 } from "./backup-schedule";
@@ -68,6 +69,16 @@ describe("backup schedule", () => {
     expect(backupDue({ ...base, lastErrorAt: failedAgo(BACKUP_RETRY_MS) })).toBe(true);
     // An old failure from before the last good backup does not hold it back.
     expect(backupDue({ ...base, lastErrorAt: pk("2026-11-19T10:00:00").toISOString() })).toBe(true);
+  });
+
+  it("holds back a try for a while after a failure (also a first full copy)", () => {
+    const now = pk("2026-11-20T23:00:00");
+    const ago = (minutes: number) => new Date(now.getTime() - minutes * 60_000).toISOString();
+    expect(failedRecently({ now, lastBackupAt: null, lastErrorAt: ago(1) })).toBe(true);
+    expect(failedRecently({ now, lastBackupAt: null, lastErrorAt: ago(16) })).toBe(false);
+    expect(failedRecently({ now, lastBackupAt: null, lastErrorAt: null })).toBe(false);
+    // A success after the failure: nothing to wait for.
+    expect(failedRecently({ now, lastBackupAt: ago(1), lastErrorAt: ago(5) })).toBe(false);
   });
 
   it("warns once a whole scheduled backup has been missed", () => {
