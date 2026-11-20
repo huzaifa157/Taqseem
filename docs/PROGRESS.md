@@ -2,6 +2,12 @@
 
 Running log of what has been built, decisions taken, and open items. Newest first.
 
+## Installer built: TaqseemSetup-0.1.0.exe — done
+
+- `pnpm package:windows` → `dist\TaqseemSetup-0.1.0.exe` (60 MB): Next.js 16.4.6 standalone, Node 24.14, PostgreSQL 17.10 with pg_dump / pg_restore 17.10, tools including the new `restore.mjs`, all migrations up to `20261121090000_tenant_bill_note`. Inno Setup 6.7.3 installed for the user by winget; the new wizard page compiled.
+- **Build fix:** the first try ran out of memory on this 7.4 GB laptop: the build started one worker per core (11) to collect page data and Windows' commit limit was reached ("Zone Allocation failed - process out of memory"). Installer builds (`TAQSEEM_STANDALONE`) now use `experimental.cpus: 2` (`next.config.ts`); other builds are unchanged.
+- Checked in the package: node runs `tools\restore.mjs`, `pgsql\tools\pg_dump.exe` is 17.10, migrations present. Not yet installed on a computer.
+
 ## Restore from the cloud in the installer; a restored computer takes over the backup — done
 
 - **Wizard** (`installer/taqseem.iss`): on a new computer (or a fresh start) a third choice, "Restore my business from the cloud backup", then a page for the connection string (hidden like a password). It goes to the setup script in a file in the setup's own temp folder (deleted by the script on reading, and by the wizard after), never on a command line.

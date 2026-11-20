@@ -63,6 +63,9 @@ export default async function config(phase: string): Promise<NextConfig> {
     experimental: {
       // Excel/CSV imports go through server actions; files are limited to 2 MB in the app.
       serverActions: { bodySizeLimit: "3mb" },
+      // The installer is built on an office laptop (8 GB): one build worker per core (11 here)
+      // ran it out of memory while collecting page data. Two are enough and fit.
+      ...(process.env.TAQSEEM_STANDALONE ? { cpus: 2 } : {}),
     },
     turbopack: {
       rules: {
