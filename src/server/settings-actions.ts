@@ -10,7 +10,12 @@ import type { ActionState } from "@/lib/action-state";
 import { runAction } from "./actions";
 import { requireTenantContext } from "./auth/session";
 import { ServiceError } from "./services/errors";
-import { disableCloudSync, enableCloudSync, restoreFromCloud } from "./services/cloud-sync";
+import {
+  disableCloudSync,
+  enableCloudSync,
+  restoreFromCloud,
+  setBackupTime,
+} from "./services/cloud-sync";
 import { setLogo, updateBusinessSettings } from "./services/settings";
 import { syncNow } from "./sync/agent";
 
@@ -67,7 +72,10 @@ export async function enableCloudSyncAction(
     // The first run (and the full copy) starts now, in the background.
     void syncNow();
     revalidatePath("/settings/cloud-sync");
-    return { message: "Cloud sync is on. The first full copy is starting now." };
+    return {
+      message:
+        "Cloud backup is on. The first full copy is starting now; after that it backs up every day.",
+    };
   });
 }
 
@@ -81,11 +89,23 @@ export async function syncNowAction(): Promise<ActionState> {
     return {
       message:
         result.status === "busy"
-          ? "A sync is already running."
+          ? "A backup is already running."
           : result.copied
-            ? "Full copy made and up to date."
-            : `Up to date (${result.sent} ${result.sent === 1 ? "change" : "changes"} sent).`,
+            ? "Backed up: full copy made."
+            : `Backed up (${result.sent} ${result.sent === 1 ? "change" : "changes"} sent).`,
     };
+  });
+}
+
+export async function setBackupTimeAction(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  return runAction(async () => {
+    const ctx = await requireTenantContext("settings.manage");
+    await setBackupTime(ctx, { time: formData.get("time") });
+    revalidatePath("/settings/cloud-sync");
+    return { message: "Saved. The daily backup runs at the new time." };
   });
 }
 

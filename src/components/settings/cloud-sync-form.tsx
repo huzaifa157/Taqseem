@@ -26,7 +26,7 @@ export function CloudSyncForm({
         autoComplete="off"
         required
         placeholder="postgresql://user:password@host/dbname?sslmode=require"
-        hint="Saved on this computer only. It is never shown again."
+        hint="Saved on this computer only and never shown again. Keep a copy somewhere safe (your phone or a password manager): you need it to restore your data on another laptop."
       />
       <FormMessage state={state} />
       <Button type="submit" disabled={pending}>

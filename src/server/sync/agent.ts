@@ -1,15 +1,22 @@
 import { join } from "node:path";
 
-import { syncOnce, type SyncResult } from "./engine";
+import { type ScheduledResult, syncIfDue, syncOnce, type SyncResult } from "./engine";
 
-// The background sync loop, inside the website's server process: a run every 30 seconds (sooner
-// after a busy run), nothing at all while cloud sync is off. Started once from instrumentation.ts.
-// The installer sets PG_BIN (its pgsql\bin) and TAQSEEM_MIGRATIONS_DIR; in development the
-// migrations are prisma/migrations and pg_dump comes from PATH.
+// The background backup loop, inside the website's server process. Every minute it asks the engine
+// whether the daily backup is due (syncIfDue: a quick look at this computer's database only); the
+// cloud database is contacted just once a day, at the backup time, or as soon as possible after a
+// missed one. "Back up now" runs at once (syncNow). Nothing at all while cloud sync is off.
+// Started once from instrumentation.ts. The installer sets PG_BIN (its pgsql\bin) and
+// TAQSEEM_MIGRATIONS_DIR; in development the migrations are prisma/migrations and pg_dump comes
+// from PATH.
 
-const EVERY_MS = 30_000;
+const CHECK_EVERY_MS = 60_000;
 
-type AgentState = { timer?: NodeJS.Timeout; running?: Promise<SyncResult>; started?: boolean };
+type AgentState = {
+  timer?: NodeJS.Timeout;
+  running?: Promise<SyncResult | ScheduledResult>;
+  started?: boolean;
+};
 const g = globalThis as typeof globalThis & { __taqseemSync?: AgentState };
 const state: AgentState = (g.__taqseemSync ??= {});
 
@@ -25,25 +32,33 @@ function options() {
   };
 }
 
-/** One run now (or the one already running). */
-export function syncNow(): Promise<SyncResult> {
-  if (state.running) return state.running;
-  const o = options();
-  if (!o) return Promise.resolve({ status: "off" });
-  state.running = syncOnce(o)
-    .catch((error): SyncResult => ({ status: "error", message: String(error) }))
+/** One run at a time: the run already going, or `start` now. */
+function single<T extends SyncResult | ScheduledResult>(start: () => Promise<T>): Promise<T> {
+  if (state.running) return state.running as Promise<T>;
+  const run = start()
+    .catch((error): T => ({ status: "error", message: String(error) }) as T)
     .finally(() => {
       state.running = undefined;
     });
-  return state.running;
+  state.running = run;
+  return run;
+}
+
+/** "Back up now": a full run straight away (or the one already running). */
+export async function syncNow(): Promise<SyncResult> {
+  const o = options();
+  if (!o) return { status: "off" };
+  const result = await single<ScheduledResult>(() => syncOnce(o));
+  // A scheduled check that was already going is not a backup: run one now.
+  return result.status === "waiting" ? single(() => syncOnce(o)) : result;
 }
 
 function schedule(ms: number) {
   clearTimeout(state.timer);
   state.timer = setTimeout(async () => {
-    const result = await syncNow();
-    // More waiting after a full batch run: go again soon; otherwise the normal pause.
-    schedule(result.status === "done" && result.sent >= 500 ? 2_000 : EVERY_MS);
+    const o = options();
+    if (o) await single(() => syncIfDue(o));
+    schedule(CHECK_EVERY_MS);
   }, ms);
   state.timer.unref?.();
 }

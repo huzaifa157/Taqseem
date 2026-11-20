@@ -11,11 +11,12 @@ import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { formatDate, toDateInput } from "@/lib/dates";
-import { formatMoney } from "@/lib/format";
+import { formatDateTime, formatMoney } from "@/lib/format";
 import { formatDozens } from "@/lib/units";
 import type { Role } from "@/generated/prisma/enums";
 import { can, type Permission } from "@/server/auth/permissions";
 import { requireTenantContext } from "@/server/auth/session";
+import { getCloudSync } from "@/server/services/cloud-sync";
 import { type Dashboard, DUE_SOON_DAYS, getDashboard } from "@/server/services/dashboard";
 import { getDashboardCharts, SALES_DAYS, WEEKS } from "@/server/services/dashboard-charts";
 import { parseDateRange } from "@/server/services/purchasing/filters";
@@ -35,6 +36,39 @@ export default function DashboardPage({ searchParams }: PageProps<"/dashboard">)
 
 const DAY_MS = 86_400_000;
 
+/**
+ * The daily cloud backup at a glance (owner): when it last ran and runs next, or a warning when a
+ * whole day's backup was missed. Nothing when cloud backup is off (or cannot be read).
+ */
+async function BackupStatus() {
+  const ctx = await requireTenantContext("settings.manage");
+  const s = await getCloudSync(ctx).catch(() => null);
+  if (!s?.enabled) return null;
+  if (s.overdue)
+    return (
+      <p
+        role="alert"
+        className="border-destructive text-destructive rounded-md border px-3 py-2 text-sm"
+      >
+        Cloud backup is overdue: the last one was{" "}
+        {s.lastSyncAt ? formatDateTime(new Date(s.lastSyncAt)) : "never"}. Check the internet, then{" "}
+        <Link href="/settings/cloud-sync" className="font-medium underline underline-offset-2">
+          back up now
+        </Link>
+        .
+      </p>
+    );
+  return (
+    <p className="text-muted-foreground -mb-4 text-xs">
+      Cloud backup: last {s.lastSyncAt ? formatDateTime(new Date(s.lastSyncAt)) : "never"} · next{" "}
+      {formatDateTime(new Date(s.nextBackupAt))} ·{" "}
+      <Link href="/settings/cloud-sync" className="underline underline-offset-2">
+        details
+      </Link>
+    </p>
+  );
+}
+
 async function DashboardView({
   searchParams,
 }: {
@@ -47,6 +81,11 @@ async function DashboardView({
   const day = (offset: number) => toDateInput(new Date(d.today.getTime() + offset * DAY_MS));
   return (
     <div className="space-y-6">
+      {can(ctx.user.role, "settings.manage") ? (
+        <Suspense fallback={null}>
+          <BackupStatus />
+        </Suspense>
+      ) : null}
       <PageHeader
         title="Dashboard"
         description={`What needs attention · ${formatDate(d.today)}${d.isToday ? " (today)" : ""}`}

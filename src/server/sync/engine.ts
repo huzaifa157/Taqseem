@@ -24,6 +24,8 @@ import { join } from "node:path";
 
 import pg from "pg";
 
+import { backupDue, backupTime } from "../../lib/backup-schedule";
+
 export const SYNC_SCHEMA = "taqseem_sync";
 export const CLOUD_MARK_SCHEMA = "taqseem_sync_target";
 const TRIGGER = "taqseem_sync_capture";
@@ -164,20 +166,33 @@ export async function pendingCount(db: Db): Promise<number> {
   return Number(rows[0]!.n);
 }
 
+/** The newest database update (migration) applied to this database; "" if none. */
+async function latestMigration(db: Db): Promise<string> {
+  const { rows } = await db.query<{ name: string | null }>(
+    `SELECT max(migration_name) AS name FROM public."_prisma_migrations"
+     WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL`,
+  );
+  return rows[0]?.name ?? "";
+}
+
 // ───────────────────────── Cloud database ─────────────────────────
 
 /** Checks a cloud database before use: reachable, new enough, and empty or already ours. */
-export async function checkCloud(cloud: Db, installId: string) {
-  const version = await cloud.query<{ v: string }>(`SHOW server_version_num`);
+export async function checkCloud(cloud: Db, installId: string, toolsMajor: number | null = null) {
+  const version = await cloud.query<{ v: string }>(
+    `SELECT current_setting('server_version_num') AS v`,
+  );
   if (Number(version.rows[0]!.v) < MIN_CLOUD_VERSION)
     throw new Error(
       "The cloud database must be PostgreSQL 17 or newer (Neon and Supabase offer it).",
     );
+  const tooNew = newerThanTools(Number(version.rows[0]!.v), toolsMajor);
+  if (tooNew) throw new Error(tooNew);
   const owner = await cloudOwner(cloud);
   const tables = (await publicTables(cloud)).length;
   if (owner && owner !== installId)
     throw new Error(
-      "This cloud database belongs to another Taqseem installation. Create a new, empty database for this one.",
+      "This cloud database belongs to another Taqseem installation (for example, it was restored on another computer, which now does the backups). To back up from this computer again, use Restore from the cloud here first; otherwise create a new, empty database for it.",
     );
   if (!owner && tables > 0)
     throw new Error("This cloud database is not empty. Create a new, empty database for Taqseem.");
@@ -209,6 +224,27 @@ function run(cmd: string, args: string[]) {
       code === 0 ? resolve(out) : reject(new Error(`${cmd} failed: ${err.trim() || out.trim()}`)),
     );
   });
+}
+
+/** The major version of the pg_dump this installation uses (the installer's is 17); null if none. */
+export async function pgToolsMajor(pgBin?: string): Promise<number | null> {
+  try {
+    const out = await run(tool(pgBin, "pg_dump"), ["--version"]);
+    const m = out.match(/\s(\d+)(?:\.\d+)*\s*$/m);
+    return m ? Number(m[1]) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * pg_dump refuses a server newer than itself, so a restore from a newer cloud database would fail
+ * exactly when it is needed. The problem, or null when the tools can read it (or are unknown).
+ */
+export function newerThanTools(cloudVersionNum: number, toolsMajor: number | null): string | null {
+  const cloudMajor = Math.floor(cloudVersionNum / 10000);
+  if (toolsMajor === null || cloudMajor <= toolsMajor) return null;
+  return `This cloud database is PostgreSQL ${cloudMajor}, newer than Taqseem's backup tools (PostgreSQL ${toolsMajor}), so restoring from it would fail. Create the cloud database with PostgreSQL ${toolsMajor} (in Neon: a new project with Postgres version ${toolsMajor}).`;
 }
 
 const tool = (pgBin: string | undefined, name: string) => {
@@ -512,7 +548,12 @@ export async function syncOnce(o: SyncOptions): Promise<SyncResult> {
           await copy();
           sent = await pushChanges(local, cloud);
         }
-        await writeConfig(local, { last_sync_at: new Date().toISOString(), last_error: null });
+        await writeConfig(local, {
+          last_sync_at: new Date().toISOString(),
+          last_error: null,
+          // What the cloud copy now has, so a later run knows whether an update still has to go.
+          cloud_schema: await latestMigration(local),
+        });
         return { status: "done", copied, sent };
       } finally {
         await cloud.end().catch(() => {});
@@ -533,6 +574,52 @@ export async function syncOnce(o: SyncOptions): Promise<SyncResult> {
 }
 
 /** A new installation id, made once when sync is first turned on. */
+export type ScheduledResult = SyncResult | { status: "waiting" };
+
+/**
+ * The daily backup (the background agent calls this every minute). It looks at this computer's
+ * database only, and contacts the cloud database just when there is something to do, so a free
+ * cloud database can sleep the rest of the day:
+ *  - sync off: nothing;
+ *  - otherwise new tables from an update start being recorded (cheap when there are none), so
+ *    work done before the next backup is never missed;
+ *  - the first full copy runs at once; after that a run is due once a day at the backup time
+ *    (`backup_time`, 7 pm by default), or as soon as possible after a missed one, waiting
+ *    BACKUP_RETRY_MS after a failed try;
+ *  - when due with nothing new (no recorded changes, no database update the cloud lacks) it is
+ *    marked as backed up without contacting the cloud: the copy already has everything.
+ */
+export async function syncIfDue(o: SyncOptions, now = new Date()): Promise<ScheduledResult> {
+  const local = new pg.Client({ connectionString: libpqUrl(o.localUrl) });
+  await local.connect();
+  try {
+    await setupLocal(local);
+    const cfg = await readConfig(local);
+    if (cfg.enabled !== "true" || !cfg.cloud_url || !cfg.install_id) return { status: "off" };
+    await installTriggers(local);
+    const firstCopy = cfg.copied_to !== fingerprint(cfg.cloud_url);
+    if (!firstCopy) {
+      const due = backupDue({
+        now,
+        time: backupTime(cfg.backup_time),
+        lastBackupAt: cfg.last_sync_at,
+        lastErrorAt: cfg.last_error_at,
+      });
+      if (!due) return { status: "waiting" };
+      if (
+        (await pendingCount(local)) === 0 &&
+        cfg.cloud_schema === (await latestMigration(local))
+      ) {
+        await writeConfig(local, { last_sync_at: now.toISOString(), last_error: null });
+        return { status: "done", copied: false, sent: 0 };
+      }
+    }
+  } finally {
+    await local.end().catch(() => {});
+  }
+  return syncOnce(o);
+}
+
 export const newInstallId = () => randomUUID();
 
 // ───────────────────────── Restore ─────────────────────────
@@ -585,7 +672,11 @@ export async function restoreFromCloud(o: RestoreOptions): Promise<RestoreResult
 }
 
 /** The installation id of a cloud database holding a Taqseem copy this program can restore. */
-async function checkRestorable(cloudUrl: string, migrationsDir: string): Promise<string> {
+async function checkRestorable(
+  cloudUrl: string,
+  migrationsDir: string,
+  pgBin?: string,
+): Promise<string> {
   let cloud: pg.Client;
   try {
     cloud = await connectCloud(cloudUrl);
@@ -595,6 +686,11 @@ async function checkRestorable(cloudUrl: string, migrationsDir: string): Promise
     );
   }
   try {
+    const version = await cloud.query<{ v: string }>(
+      `SELECT current_setting('server_version_num') AS v`,
+    );
+    const tooNew = newerThanTools(Number(version.rows[0]!.v), await pgToolsMajor(pgBin));
+    if (tooNew) throw new Error(tooNew);
     const owner = await cloudOwner(cloud);
     const tables = await cloud.query<{ ok: boolean }>(
       `SELECT to_regclass('public."_prisma_migrations"') IS NOT NULL
@@ -616,11 +712,38 @@ async function checkRestorable(cloudUrl: string, migrationsDir: string): Promise
   }
 }
 
+/**
+ * Moves the cloud copy's ownership from the installation it was restored from to this one, only if
+ * that installation still owns it (so two restores at once cannot both win).
+ */
+async function takeOverCloud(cloudUrl: string, fromId: string, toId: string) {
+  let cloud: pg.Client;
+  try {
+    cloud = await connectCloud(cloudUrl);
+  } catch (error) {
+    throw new Error(
+      `The data was restored, but this computer could not take over the cloud backup (${error instanceof Error ? error.message : error}). Check the internet and restore again.`,
+    );
+  }
+  try {
+    const { rowCount } = await cloud.query(
+      `UPDATE ${CLOUD_MARK_SCHEMA}.installation SET id = $2, since = now() WHERE id = $1`,
+      [fromId, toId],
+    );
+    if (rowCount !== 1)
+      throw new Error(
+        "The cloud backup was taken over by another computer during the restore. Restore again.",
+      );
+  } finally {
+    await cloud.end().catch(() => {});
+  }
+}
+
 const migrationFile = (dir: string, name: string) =>
   join(/* turbopackIgnore: true */ dir, name, "migration.sql");
 
 async function restoreLocked(local: Db, o: RestoreOptions): Promise<RestoreResult> {
-  const installId = await checkRestorable(o.cloudUrl, o.migrationsDir);
+  const installId = await checkRestorable(o.cloudUrl, o.migrationsDir, o.pgBin);
 
   const dir = await mkdtemp(join(tmpdir(), "taqseem-restore-"));
   try {
@@ -690,14 +813,17 @@ async function restoreLocked(local: Db, o: RestoreOptions): Promise<RestoreResul
     // 4. Database updates of this program the cloud copy did not have yet.
     const updated = await migrateLocal(local, o.migrationsDir);
 
-    // Sync carries on into the same cloud database, as the same installation; the next run sends
-    // these database updates to the cloud copy too.
+    // 5. This computer takes over the cloud copy under a new installation id, so the computer it
+    // came from is refused if it ever sends again (instead of mixing its changes into this copy).
+    // Backups carry on into the same cloud database; the next run sends these database updates.
+    const newId = newInstallId();
+    await takeOverCloud(o.cloudUrl, installId, newId);
     await local.query(`TRUNCATE ${SYNC_SCHEMA}.outbox`);
     await installTriggers(local);
     await writeConfig(local, {
       enabled: "true",
       cloud_url: o.cloudUrl,
-      install_id: installId,
+      install_id: newId,
       copied_to: fingerprint(o.cloudUrl),
       restored_at: new Date().toISOString(),
       last_error: null,

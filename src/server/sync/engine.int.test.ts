@@ -22,9 +22,11 @@ import {
   readConfig,
   restoreFromCloud,
   setupLocal,
+  syncIfDue,
   syncOnce,
   writeConfig,
 } from "./engine";
+import { BACKUP_RETRY_MS, lastScheduledAt } from "../../lib/backup-schedule";
 
 // The real sync between two throwaway databases on the test server: a full copy with pg_dump /
 // pg_restore, then changes. Needs pg_dump / pg_restore: PG_BIN, or the installer's copy.
@@ -323,6 +325,65 @@ describe.skipIf(!PG_BIN)("cloud sync (office → its own cloud database)", () =>
     expect(await sync()).toMatchObject({ status: "done", copied: false, sent: 0 });
   }, 120_000);
 
+  it("backs up once a day, and contacts the cloud only when a backup is due and has work", async () => {
+    const opts = { localUrl: urlFor(LOCAL), migrationsDir: MIGRATIONS, pgBin: PG_BIN };
+    const slot = lastScheduledAt(new Date(), "19:00"); // the most recent 7 pm (Pakistan time)
+    const beforeSlot = new Date(slot.getTime() - 3_600_000).toISOString();
+    // While connections are refused, any contact with the cloud fails: proof it was not contacted.
+    const cloudClosed = (closed: boolean) =>
+      onServer(`ALTER DATABASE ${CLOUD} WITH ALLOW_CONNECTIONS ${closed ? "false" : "true"}`);
+    const cloudName = async () =>
+      (await rows(cloud, `SELECT name FROM "Warehouse" WHERE id = 'w2'`))[0]?.name;
+    expect(await sync()).toMatchObject({ status: "done" }); // up to date to start with
+
+    try {
+      // Backed up at the last 7 pm: a change waits for the next one; the cloud is not contacted.
+      await writeConfig(local, {
+        backup_time: "19:00",
+        last_sync_at: slot.toISOString(),
+        last_error: null,
+        last_error_at: null,
+      });
+      await local.query(`UPDATE "Warehouse" SET name = 'Daily Store' WHERE id = 'w2'`);
+      await cloudClosed(true);
+      expect(await syncIfDue(opts)).toEqual({ status: "waiting" });
+
+      // Due, nothing new: marked as backed up without the cloud (it already has everything).
+      await local.query(`TRUNCATE taqseem_sync.outbox`);
+      await writeConfig(local, { last_sync_at: beforeSlot });
+      expect(await syncIfDue(opts)).toMatchObject({ status: "done", sent: 0 });
+      const cfg = await readConfig(local);
+      expect(new Date(cfg.last_sync_at!).getTime()).toBeGreaterThanOrEqual(slot.getTime());
+      expect(cfg.last_error).toBeUndefined();
+
+      // Due with a change but no internet: the try fails, and the next waits a while.
+      await local.query(`UPDATE "Warehouse" SET name = 'Daily Store' WHERE id = 'w2'`);
+      await writeConfig(local, { last_sync_at: beforeSlot });
+      expect((await syncIfDue(opts)).status).toBe("error");
+      expect(await syncIfDue(opts)).toEqual({ status: "waiting" });
+    } finally {
+      await cloudClosed(false);
+    }
+
+    // Internet back after the wait: the backup runs and sends the change.
+    await writeConfig(local, {
+      last_error_at: new Date(Date.now() - BACKUP_RETRY_MS - 1000).toISOString(),
+    });
+    expect(await syncIfDue(opts)).toMatchObject({ status: "done", sent: 1 });
+    expect(await cloudName()).toBe("Daily Store");
+    // Done for today.
+    expect(await syncIfDue(opts)).toEqual({ status: "waiting" });
+
+    // Turned off: nothing at all.
+    await writeConfig(local, { enabled: "false" });
+    expect(await syncIfDue(opts)).toEqual({ status: "off" });
+    await writeConfig(local, { enabled: "true" });
+
+    // Leave the data as the next test expects it.
+    await local.query(`UPDATE "Warehouse" SET name = 'Second Store' WHERE id = 'w2'`);
+    expect(await sync()).toMatchObject({ status: "done", sent: 1 });
+  }, 120_000);
+
   it("restores a new office computer from the cloud copy, then carries on syncing", async () => {
     await onServer(`CREATE DATABASE ${NEW}`);
     const fresh = new pg.Client({ connectionString: urlFor(NEW) });
@@ -390,8 +451,14 @@ describe.skipIf(!PG_BIN)("cloud sync (office → its own cloud database)", () =>
           `SELECT count(*)::int AS n FROM pg_namespace WHERE nspname = 'taqseem_restore_old'`,
         ),
       ).toEqual([{ n: 0 }]);
-      // It is the same installation now, so the old computer's id stays with the cloud copy.
-      expect(await readConfig(fresh)).toMatchObject({ enabled: "true", install_id: "install-a" });
+      // The new computer took over the cloud copy under its own new installation id.
+      const taken = await readConfig(fresh);
+      expect(taken).toMatchObject({ enabled: "true" });
+      expect(taken.install_id).toBeTruthy();
+      expect(taken.install_id).not.toBe("install-a");
+      expect(await rows(cloud, `SELECT id FROM taqseem_sync_target.installation`)).toEqual([
+        { id: taken.install_id },
+      ]);
 
       // Changes on the new computer reach the cloud copy, with the new update.
       await fresh.query(`UPDATE "Warehouse" SET code = 'W1' WHERE id = 'w1'`);
@@ -401,6 +468,16 @@ describe.skipIf(!PG_BIN)("cloud sync (office → its own cloud database)", () =>
       expect(await rows(cloud, `SELECT code FROM "Warehouse" WHERE id = 'w1'`)).toEqual([
         { code: "W1" },
       ]);
+
+      // The old computer comes back online with a change: refused, and the cloud copy untouched.
+      const cloudW1 = await rows(cloud, `SELECT name, code FROM "Warehouse" WHERE id = 'w1'`);
+      await local.query(`UPDATE "Warehouse" SET name = 'Old computer' WHERE id = 'w1'`);
+      const old = await sync();
+      expect(old.status).toBe("error");
+      expect(old.status === "error" && old.message).toMatch(/restored on another computer/);
+      expect(await rows(cloud, `SELECT name, code FROM "Warehouse" WHERE id = 'w1'`)).toEqual(
+        cloudW1,
+      );
     } finally {
       await fresh.end();
       rmSync(dir, { recursive: true, force: true });

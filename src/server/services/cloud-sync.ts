@@ -5,6 +5,8 @@ import { join } from "node:path";
 import pg from "pg";
 import { z } from "zod";
 
+import { backupOverdue, backupTime, isBackupTime, nextScheduledAt } from "@/lib/backup-schedule";
+
 import { writeAudit } from "../audit";
 import { assertCan } from "../auth/permissions";
 import { prisma } from "../db/client";
@@ -15,6 +17,7 @@ import {
   libpqUrl,
   newInstallId,
   pendingCount,
+  pgToolsMajor,
   readConfig,
   removeTriggers,
   restoreFromCloud as restoreEngine,
@@ -68,13 +71,25 @@ export type CloudSyncStatus = {
   pending: number;
   /** When this computer's data was last replaced by the cloud copy. */
   restoredAt: string | null;
+  /** Daily backup time, "19:00" style (business time zone). */
+  backupTime: string;
+  /** The next scheduled backup. */
+  nextBackupAt: string;
+  /** A whole scheduled backup has been missed (on and copied, but nothing for over a day). */
+  overdue: boolean;
 };
 
 export async function getCloudSync(ctx: ServiceCtx): Promise<CloudSyncStatus> {
   assertCan(ctx.user.role, "settings.manage");
   return withLocal(async (db) => {
     const cfg = await readConfig(db);
+    const now = new Date();
+    const time = backupTime(cfg.backup_time);
     return {
+      backupTime: time,
+      nextBackupAt: nextScheduledAt(now, time).toISOString(),
+      overdue:
+        cfg.enabled === "true" && backupOverdue({ now, time, lastBackupAt: cfg.last_sync_at }),
       enabled: cfg.enabled === "true",
       target: cfg.cloud_url ? describeUrl(cfg.cloud_url) : null,
       copied: Boolean(cfg.copied_to),
@@ -107,7 +122,7 @@ export async function enableCloudSync(ctx: ServiceCtx, input: unknown) {
       );
     }
     try {
-      await checkCloud(cloud, installId);
+      await checkCloud(cloud, installId, await pgToolsMajor(process.env.PG_BIN));
     } catch (error) {
       throw new ServiceError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -128,6 +143,25 @@ export async function enableCloudSync(ctx: ServiceCtx, input: unknown) {
     entityType: "CloudSync",
     entityId: ctx.user.tenantId,
     newValue: { enabled: true, target: describeUrl(url) },
+  });
+}
+
+/** When the daily backup runs ("19:00" style, the business's time zone). */
+export async function setBackupTime(ctx: ServiceCtx, input: unknown) {
+  assertCan(ctx.user.role, "settings.manage");
+  const time = String((input as { time?: unknown })?.time ?? "").trim();
+  if (!isBackupTime(time)) throw new ServiceError("Choose a time, e.g. 19:00 for 7 pm.");
+  const before = await withLocal(async (db) => {
+    const cfg = await readConfig(db);
+    await writeConfig(db, { backup_time: time });
+    return backupTime(cfg.backup_time);
+  });
+  await writeAudit(ctx.db, ctx.user, {
+    action: "UPDATE",
+    entityType: "CloudSync",
+    entityId: ctx.user.tenantId,
+    oldValue: { backupTime: before },
+    newValue: { backupTime: time },
   });
 }
 

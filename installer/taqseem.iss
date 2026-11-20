@@ -1,8 +1,9 @@
 ; Taqseem Windows installer (Inno Setup 6). Built by scripts/windows/package.ps1, which passes
 ; /DAppVersion=... /DDist=<folder with the packaged app> /DOutDir=<where TaqseemSetup.exe goes>.
 ;
-; The wizard asks what setup-windows.bat asked: on a new computer, demo data or your business;
-; where Taqseem is already installed, update and keep the data, or start fresh (type DELETE).
+; The wizard asks what setup-windows.bat asked: on a new computer, demo data, your business, or
+; your business restored from its cloud backup (paste the connection string); where Taqseem is
+; already installed, update and keep the data, or start fresh (type DELETE).
 ; The work after copying the files is done by setup\install.ps1. ASCII only.
 
 #ifndef AppVersion
@@ -68,6 +69,7 @@ var
   ConfirmPage: TInputQueryWizardPage;
   ContentsPage: TInputOptionWizardPage;
   BusinessPage: TInputQueryWizardPage;
+  CloudPage: TInputQueryWizardPage;
   Succeeded: Boolean;
   DeleteDataOnUninstall: Boolean;
 
@@ -115,6 +117,7 @@ begin
     'What should Taqseem contain?', 'Choose how to start.', '', True, False);
   ContentsPage.Add('Demo data, to try it out (sample companies, products and customers)');
   ContentsPage.Add('My business (empty; you enter your own data)');
+  ContentsPage.Add('Restore my business from the cloud backup (new or replacement computer)');
   ContentsPage.SelectedValueIndex := 0;
 
   BusinessPage := CreateInputQueryPage(ContentsPage.ID,
@@ -123,6 +126,13 @@ begin
   BusinessPage.Add('Business name:', False);
   BusinessPage.Add('Owner''s full name:', False);
   BusinessPage.Add('Owner''s email:', False);
+
+  CloudPage := CreateInputQueryPage(BusinessPage.ID,
+    'Restore from the cloud backup', 'Paste the connection string of your cloud backup.',
+    'The one you saved when you turned the backup on (or copy it from Neon: Connect, with ' +
+    'connection pooling off). It starts with postgresql://. All data, users and passwords come ' +
+    'back, and this computer takes over the daily backup.');
+  CloudPage.Add('Connection string:', True);
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
@@ -131,7 +141,8 @@ begin
   if PageID = UpdatePage.ID then Result := not HasData()
   else if PageID = ConfirmPage.ID then Result := not StartFresh()
   else if PageID = ContentsPage.ID then Result := not NeedsContents()
-  else if PageID = BusinessPage.ID then Result := (not NeedsContents()) or (ContentsPage.SelectedValueIndex <> 1);
+  else if PageID = BusinessPage.ID then Result := (not NeedsContents()) or (ContentsPage.SelectedValueIndex <> 1)
+  else if PageID = CloudPage.ID then Result := (not NeedsContents()) or (ContentsPage.SelectedValueIndex <> 2);
 end;
 
 function ValidEmail(S: String): Boolean;
@@ -162,6 +173,11 @@ begin
       MsgBox('Enter a valid email for the owner.', mbError, MB_OK);
       Result := False;
     end;
+  end
+  else if (CurPageID = CloudPage.ID) and (Pos('postgres', Lowercase(Trim(CloudPage.Values[0]))) <> 1) then
+  begin
+    MsgBox('Paste the cloud backup''s connection string. It starts with postgresql://', mbError, MB_OK);
+    Result := False;
   end;
 end;
 
@@ -192,7 +208,7 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 var
-  Params, Login, Output, Tail: String;
+  Params, Login, Output, Tail, UrlFile: String;
   Lines: TArrayOfString;
   I, Code: Integer;
 begin
@@ -201,6 +217,15 @@ begin
     Params := '-Mode update'
   else if ContentsPage.SelectedValueIndex = 0 then
     Params := '-Mode demo'
+  else if ContentsPage.SelectedValueIndex = 2 then
+  begin
+    { The connection string holds a password: it goes in a file in this setup's own temp folder
+      (deleted by the script as soon as it is read, and with the folder at the end), never on the
+      command line. }
+    UrlFile := ExpandConstant('{tmp}\cloud-url.txt');
+    SaveStringToFile(UrlFile, Trim(CloudPage.Values[0]), False);
+    Params := '-Mode restore -CloudUrlFile ' + Arg(UrlFile);
+  end
   else
     Params := '-Mode business -Business ' + Arg(BusinessPage.Values[0]) +
       ' -Owner ' + Arg(BusinessPage.Values[1]) + ' -Email ' + Arg(BusinessPage.Values[2]);
@@ -224,6 +249,8 @@ begin
     ExpandConstant('{app}\setup\install.ps1') + '" ' + Params + ' > "' + Output + '" 2>&1"',
     '', SW_HIDE, ewWaitUntilTerminated, Code);
   Succeeded := Code = 0;
+  { The script deletes it on reading; this covers a script that stopped before that. }
+  if UrlFile <> '' then DeleteFile(UrlFile);
   { Readable by everyone on this computer (it holds no passwords), now that nothing has it open. }
   Exec(ExpandConstant('{sys}\icacls.exe'), '"' + Output + '" /grant *S-1-5-32-545:R /Q',
     '', SW_HIDE, ewWaitUntilTerminated, I);

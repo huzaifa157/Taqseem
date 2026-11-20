@@ -4,7 +4,7 @@
 #   app\         the self-contained website (Next.js standalone build: compiled files only)
 #   node\        node.exe, so nothing has to be installed
 #   pgsql\       PostgreSQL 17 (from the npm registry, like setup-windows.bat)
-#   tools\       migrate / seed / create-tenant / db helpers, each bundled into one .mjs file
+#   tools\       migrate / seed / create-tenant / db / restore helpers, each bundled into one .mjs file
 #   migrations\  the database changes (SQL)
 #   service\     WinSW, which runs the website as a Windows service
 #   setup\       install.ps1 and remove.ps1, run by the installer
@@ -83,7 +83,8 @@ $bundles = @(
   @{ In = "installer\tools\migrate.ts"; Out = "migrate.mjs" },
   @{ In = "prisma\seed.ts"; Out = "seed.mjs" },
   @{ In = "prisma\create-tenant.ts"; Out = "create-tenant.mjs" },
-  @{ In = "scripts\windows\db.mjs"; Out = "db.mjs" }
+  @{ In = "scripts\windows\db.mjs"; Out = "db.mjs" },
+  @{ In = "installer\tools\restore.ts"; Out = "restore.mjs" }
 )
 foreach ($b in $bundles) {
   # react-server: "server-only" imports resolve to its empty module outside Next.js.

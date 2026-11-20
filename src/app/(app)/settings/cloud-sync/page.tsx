@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { ConfirmAction } from "@/components/form/confirm-action";
 import { RequirePermission } from "@/components/layout/no-access";
 import { BackLink, PageHeader } from "@/components/layout/page-header";
+import { BackupTimeForm } from "@/components/settings/backup-time-form";
 import { CloudRestoreForm } from "@/components/settings/cloud-restore-form";
 import { CloudSyncForm } from "@/components/settings/cloud-sync-form";
 import { Badge } from "@/components/ui/badge";
@@ -13,6 +14,7 @@ import {
   disableCloudSyncAction,
   enableCloudSyncAction,
   restoreFromCloudAction,
+  setBackupTimeAction,
   syncNowAction,
 } from "@/server/settings-actions";
 
@@ -24,7 +26,7 @@ export default function CloudSyncPage() {
       <BackLink href="/settings">Settings</BackLink>
       <PageHeader
         title="Cloud sync"
-        description="Keep a copy of this computer's data in your own cloud database: an off-site backup that stays up to date. Taqseem keeps working without internet; changes wait and are sent when the internet is back."
+        description="Keep a copy of this computer's data in your own cloud database: an off-site backup, sent automatically once a day. Taqseem keeps working without internet; if the computer is off or offline at backup time, the backup runs as soon as it can."
       />
       <Status />
     </RequirePermission>
@@ -40,7 +42,9 @@ async function Status() {
         <h2 id="sync-status" className="flex items-center gap-2 font-medium">
           Status
           {s.enabled ? (
-            s.lastError ? (
+            s.overdue ? (
+              <Badge variant="destructive">Backup overdue</Badge>
+            ) : s.lastError ? (
               <Badge variant="destructive">On, with a problem</Badge>
             ) : (
               <Badge variant="secondary">On</Badge>
@@ -49,17 +53,28 @@ async function Status() {
             <Badge variant="outline">Off</Badge>
           )}
         </h2>
+        {s.overdue ? (
+          <p role="alert" className="text-destructive text-sm">
+            No backup for more than a day. Check the internet, then press Back up now.
+          </p>
+        ) : null}
         <dl className="grid grid-cols-[12rem_1fr] gap-y-1 text-sm">
           <dt className="text-muted-foreground">Cloud database</dt>
           <dd>{s.target ?? "—"}</dd>
           <dt className="text-muted-foreground">Full copy</dt>
           <dd>{s.copied ? "Made" : s.enabled ? "Waiting for the first run" : "—"}</dd>
-          <dt className="text-muted-foreground">Last sent</dt>
+          <dt className="text-muted-foreground">Last backup</dt>
           <dd>{s.lastSyncAt ? formatDateTime(new Date(s.lastSyncAt)) : "Never"}</dd>
+          {s.enabled ? (
+            <>
+              <dt className="text-muted-foreground">Next backup</dt>
+              <dd>{formatDateTime(new Date(s.nextBackupAt))} (automatic, every day)</dd>
+            </>
+          ) : null}
           <dt className="text-muted-foreground">Changes waiting</dt>
           <dd className="tabular-nums">
             {s.pending}
-            {s.pending > 0 && s.enabled ? " (sent when the internet is up)" : ""}
+            {s.pending > 0 && s.enabled ? " (sent with the next backup)" : ""}
           </dd>
           {s.restoredAt ? (
             <>
@@ -75,18 +90,21 @@ async function Status() {
           </p>
         ) : null}
         {s.enabled ? (
-          <div className="flex flex-wrap gap-2">
-            <ConfirmAction
-              action={syncNowAction}
-              label="Sync now"
-              confirm="Send all waiting changes to the cloud now?"
-            />
-            <ConfirmAction
-              action={disableCloudSyncAction}
-              label="Turn off"
-              confirm="Turn cloud sync off? Nothing more is sent; the cloud copy stays as it is. Turning it on again makes a fresh full copy."
-            />
-          </div>
+          <>
+            <div className="flex flex-wrap gap-2">
+              <ConfirmAction
+                action={syncNowAction}
+                label="Back up now"
+                confirm="Send all waiting changes to the cloud now?"
+              />
+              <ConfirmAction
+                action={disableCloudSyncAction}
+                label="Turn off"
+                confirm="Turn cloud sync off? Nothing more is sent; the cloud copy stays as it is. Turning it on again makes a fresh full copy."
+              />
+            </div>
+            <BackupTimeForm action={setBackupTimeAction} time={s.backupTime} />
+          </>
         ) : null}
       </section>
 
@@ -106,7 +124,8 @@ async function Status() {
             <code className="mx-1">postgresql://user:password@host/dbname?sslmode=require</code>.
           </li>
           <li>
-            Paste it below. Taqseem checks it, then copies everything and keeps it up to date.
+            Paste it below. Taqseem checks it, copies everything, and then backs up automatically
+            once a day.
           </li>
         </ol>
         <CloudSyncForm action={enableCloudSyncAction} enabled={s.enabled} />

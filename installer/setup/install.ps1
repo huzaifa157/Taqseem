@@ -4,17 +4,20 @@
 #   -Mode demo       new installation with demo data
 #   -Mode business   new installation for a real business (-Business, -Owner, -Email)
 #   -Mode update     keep the data: back it up, apply database changes, restart
-#   -Fresh           delete the existing data first (then demo or business)
+#   -Mode restore    new installation from the business's cloud backup (-CloudUrlFile: a file
+#                    holding the connection string, deleted as soon as it is read)
+#   -Fresh           delete the existing data first (then demo, business or restore)
 #
 # Program files: the install folder (read-only). Data: C:\ProgramData\Taqseem (database, settings,
 # backups, logs), so updating or reinstalling the program never touches it.
 # Written for Windows PowerShell 5.1. ASCII only.
 
 param(
-  [Parameter(Mandatory = $true)][ValidateSet("demo", "business", "update")][string]$Mode,
+  [Parameter(Mandatory = $true)][ValidateSet("demo", "business", "update", "restore")][string]$Mode,
   [string]$Business = "",
   [string]$Owner = "",
   [string]$Email = "",
+  [string]$CloudUrlFile = "",
   [switch]$Fresh,
   [string]$DataDir = (Join-Path $env:ProgramData "Taqseem")
 )
@@ -259,6 +262,19 @@ function Repair-Passwords {
 }
 
 Write-Host "Taqseem setup: $Mode$(if ($Fresh) { ' (fresh)' })"
+
+# Restore: the cloud connection string (it holds a password) is read and its file deleted first,
+# so it is never left on disk, whatever happens next. It is never printed.
+$CloudUrl = ""
+if ($Mode -eq "restore") {
+  if ($CloudUrlFile -and (Test-Path $CloudUrlFile)) {
+    $CloudUrl = (Get-Content -Path $CloudUrlFile -Raw -Encoding UTF8).Trim()
+    Remove-Item $CloudUrlFile -Force -ErrorAction SilentlyContinue
+  }
+  if ($CloudUrl -notmatch "^postgres(ql)?://") {
+    Fail "The cloud backup's connection string is missing. Run the setup again and paste it (it starts with postgresql://)."
+  }
+}
 Write-Host "Program: $AppDir"
 Write-Host "Data:    $DataDir"
 
@@ -367,6 +383,21 @@ if ($tenants.Out -eq "0") {
     if ($r.Code -ne 0) { Fail "Creating the business failed: $($r.Out)" }
     $lines = ($r.Out -split "`r?`n") | Where-Object { $_ -match "^(Owner login|One-time password):" }
     $login = "$Business. $($lines -join '. ')."
+  } elseif ($Mode -eq "restore") {
+    # Before the website starts, so its daily backup cannot run during the restore. This
+    # installation then takes over the backup; the old computer is refused if it comes back.
+    Step "Restoring your business from the cloud backup (a few minutes)"
+    $r = Tool "restore.mjs" @() @{
+      DATABASE_URL           = $appUrl
+      TAQSEEM_CLOUD_URL      = $CloudUrl
+      TAQSEEM_MIGRATIONS_DIR = (Join-Path $AppDir "migrations")
+      TAQSEEM_BACKUP_DIR     = $BackupDir
+      PG_BIN                 = $PgTools
+    }
+    $CloudUrl = ""
+    if ($r.Code -ne 0) { Fail "Restoring from the cloud backup failed: $($r.Out)" }
+    Write-Host "    $($r.Out)"
+    $login = "Restored from the cloud backup. $($r.Out) Sign in with your usual email and password. The daily cloud backup carries on from this computer."
   }
   if ($login) {
     @(
