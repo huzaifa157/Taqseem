@@ -698,20 +698,20 @@ export function OrderEntry({
         <h2 id="lines-heading" className="sr-only">
           {counter ? "Sale" : "Order"} lines
         </h2>
-        <div className="bg-card overflow-hidden rounded-xl border shadow-xs">
+        <div className="bg-card border-foreground overflow-hidden rounded-xl border shadow-xs">
           {/* Its height is fitted to the window (fitGridToWindow), so lines never push the page. */}
           <div ref={gridScrollRef} className="h-[22rem] overflow-auto">
             <table className="w-full text-sm">
-              <thead className="bg-muted/60 sticky top-0 z-10 backdrop-blur">
+              <thead className="bg-muted sticky top-0 z-10">
                 <tr>
                   <GridTh className="w-10">#</GridTh>
                   <GridTh className="w-full">Item</GridTh>
                   <GridTh className="text-right">In stock</GridTh>
                   <GridTh className="text-right">Qty</GridTh>
                   <GridTh>Unit</GridTh>
-                  <GridTh className="text-right">Price</GridTh>
+                  <GridTh className="min-w-28 text-right">Price</GridTh>
                   <GridTh className="text-right">Disc / dz</GridTh>
-                  <GridTh className="text-right">Amount</GridTh>
+                  <GridTh className="min-w-32 text-right">Amount</GridTh>
                   <GridTh className="w-8">
                     <span className="sr-only">Remove</span>
                   </GridTh>
@@ -808,7 +808,7 @@ export function OrderEntry({
                       <GridTd className="px-1">
                         <button
                           type="button"
-                          className="text-muted-foreground hover:text-destructive rounded px-1.5 py-0.5"
+                          className="text-destructive hover:bg-destructive/10 rounded px-1.5 py-0.5 text-base font-semibold"
                           aria-label={`Remove ${product.name}`}
                           aria-keyshortcuts="Control+Delete"
                           title="Remove (Ctrl+Delete in the dozens box)"
@@ -828,7 +828,7 @@ export function OrderEntry({
                   <GridTd className="border-l-brand border-l-2 font-semibold tabular-nums">
                     {lines.length + 1}
                   </GridTd>
-                  <GridTd colSpan={2}>
+                  <GridTd className="py-1">
                     {hasProducts ? (
                       <Combobox
                         label="Add product"
@@ -870,7 +870,7 @@ export function OrderEntry({
                       </p>
                     )}
                   </GridTd>
-                  {Array.from({ length: GRID_COLUMNS - 4 }, (_, j) => (
+                  {Array.from({ length: GRID_COLUMNS - 3 }, (_, j) => (
                     <GridTd key={j} />
                   ))}
                   <GridTd className="text-muted-foreground text-right">—</GridTd>
@@ -893,7 +893,7 @@ export function OrderEntry({
               </tbody>
             </table>
           </div>
-          <div className="bg-muted/40 flex flex-wrap items-center justify-between gap-x-6 gap-y-1 border-t px-4 py-1.5">
+          <div className="bg-muted/40 border-foreground flex flex-wrap items-center justify-between gap-x-6 gap-y-1 border-t px-4 py-1.5">
             <div className="text-muted-foreground flex flex-wrap items-center gap-x-2 text-sm">
               <span>
                 {lines.length} {lines.length === 1 ? "item" : "items"}
@@ -1165,7 +1165,7 @@ function GridTh({ children, className }: { children?: React.ReactNode; className
     <th
       scope="col"
       className={cn(
-        "text-muted-foreground border-b px-3 py-2 text-left text-[11px] font-semibold tracking-wider whitespace-nowrap uppercase",
+        "text-foreground border-foreground/85 border-b-foreground border-r border-b px-3 py-2 text-left text-[11px] font-semibold tracking-wider whitespace-nowrap uppercase last:border-r-0",
         className,
       )}
     >
@@ -1184,7 +1184,14 @@ function GridTd({
   colSpan?: number;
 }) {
   return (
-    <td colSpan={colSpan} className={cn("border-b px-3 py-0.5 align-middle", className)}>
+    <td
+      colSpan={colSpan}
+      className={cn(
+        // Voucher-style lines: rows and columns plain to see, a little lighter between columns.
+        "border-foreground/85 border-b-foreground/85 border-r border-b px-3 py-0.5 align-middle last:border-r-0",
+        className,
+      )}
+    >
       {children}
     </td>
   );

@@ -2,6 +2,13 @@
 
 Running log of what has been built, decisions taken, and open items. Newest first.
 
+## Order grid: voucher-style lines (0.1.4) — done
+
+- Counter sale / order entry grid: dark row and column lines (85% of the text colour), a black
+  outer border, header rule and totals rule, solid header with black text.
+- Wider Price and Amount columns; the remove × is red.
+- The product search box stays inside the Item column, so the In stock divider runs unbroken.
+
 ## Settings → Clear entries: a clean start before going live — done
 
 - Owner only (`settings.manage`). The page shows what will go (orders, bills, payments, goods
