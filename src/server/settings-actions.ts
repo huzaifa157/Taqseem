@@ -9,6 +9,7 @@ import type { ActionState } from "@/lib/action-state";
 
 import { runAction } from "./actions";
 import { requireTenantContext } from "./auth/session";
+import { clearEntries } from "./services/clear-entries";
 import { ServiceError } from "./services/errors";
 import {
   disableCloudSync,
@@ -75,6 +76,20 @@ export async function enableCloudSyncAction(
     return {
       message:
         "Cloud backup is on. The first full copy is starting now; after that it backs up every day.",
+    };
+  });
+}
+
+export async function clearEntriesAction(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  return runAction(async () => {
+    const ctx = await requireTenantContext("settings.manage");
+    const c = await clearEntries(ctx, { confirm: formData.get("confirm") });
+    revalidatePath("/", "layout");
+    return {
+      message: `Cleared: ${c.salesOrders} orders, ${c.bills} bills, ${c.customerPayments} customer payments, ${c.goodsReceipts} goods receipts, ${c.companyBills} company bills, ${c.companyPayments} company payments and ${c.stockMovements} stock entries. Products, customers and companies are kept.`,
     };
   });
 }

@@ -5,6 +5,7 @@ import {
   History,
   Map,
   Printer,
+  Trash2,
   UserRound,
   Users,
   Warehouse,
@@ -71,6 +72,12 @@ const SECTIONS = [
     title: "Audit log",
     description: "Who changed what and when, with old and new values.",
     icon: History,
+  },
+  {
+    href: "/settings/clear-entries",
+    title: "Clear entries",
+    description: "Start clean before going live: remove trial orders, purchases and stock.",
+    icon: Trash2,
   },
 ];
 

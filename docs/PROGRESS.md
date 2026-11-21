@@ -2,6 +2,30 @@
 
 Running log of what has been built, decisions taken, and open items. Newest first.
 
+## Settings → Clear entries: a clean start before going live — done
+
+- Owner only (`settings.manage`). The page shows what will go (orders, bills, payments, goods
+  receipts, company bills and payments, stock entries) and asks you to type CLEAR.
+- `src/server/services/clear-entries.ts`, all in one transaction: sales orders, bills and their
+  revisions, customer returns, damage claims, purchase orders, goods receipts, company bills and
+  payments, every stock movement, batch and stock adjustment (opening stock too), customer
+  payments taken with an order or put against a bill, and the ledger entries of all of these and
+  their reversals. Document numbers restart at 1 where their table is now empty.
+- Kept: master data (companies, products, rates, customers, areas, warehouses, bikes, staff,
+  users), customer old balances and the payments that only settle them, opening balances,
+  delivery trips, expenses and the audit log. The clear itself writes one audit row.
+- **Approved exception to rule 2** (append-only journals): the user asked to remove trial data
+  and keep master data. The append-only triggers are switched off with `ALTER TABLE … DISABLE
+  TRIGGER USER` inside the transaction only (a rollback undoes it), then switched on again.
+  Needs the app's database user to own the tables (true for the installer and for dev).
+- Cloud backup: the cloud's journals are append-only too, so the deletes are not replayed. The
+  clear drops the waiting changes and forgets `copied_to`, so the next agent check (within a
+  minute) makes a fresh full copy, replacing the cloud copy.
+- Test: `clear-entries.int.test.ts` (another business is untouched; numbers restart; journals
+  locked again).
+- Open: not yet tried against the real Neon backup; check Settings → Cloud sync shows "Full
+  copy made" after the first clear on the office laptop.
+
 ## Faster entry: clear suggestion highlight, Tab picks, day-end cash filled — done (0.1.2)
 
 - **Suggestion highlight** (`Combobox`, every search list): the option ↑/↓ or the mouse is on has a green tint, a solid green bar on the left and bold text (`ACTIVE_OPTION`); the theme's accent grey was nearly white.
