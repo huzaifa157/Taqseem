@@ -295,6 +295,8 @@ function OrderCard({
                     { returned: quantityText(l.quantity), damaged: "" },
                   ]),
                 ),
+                // Nothing kept, so nothing paid for it (type an amount if they paid old dues).
+                cash: "0",
               }))
             }
           >
@@ -304,7 +306,11 @@ function OrderCard({
             type="button"
             variant="ghost"
             size="sm"
-            onClick={() => onChange((x) => ({ ...x, qty: {} }))}
+            onClick={() =>
+              // Everything kept: the usual case is the whole bill paid in cash; type over it if
+              // they paid less or more.
+              onChange((x) => ({ ...x, qty: {}, cash: new Decimal(o.billBefore).toFixed(2) }))
+            }
           >
             All delivered
           </Button>

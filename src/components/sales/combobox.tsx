@@ -8,6 +8,12 @@ import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 
 /**
+ * The option ↑/↓ (or the mouse) is on: a green tint with a solid green bar on the left, so it is
+ * plain to see (the theme's accent grey was nearly white). Enter picks this one.
+ */
+const ACTIVE_OPTION = "bg-brand/25 font-medium shadow-[inset_4px_0_0_var(--color-brand)]";
+
+/**
  * Keyboard-first search box with a pick list: type to filter, ↑/↓ to move, Enter to pick, Esc to
  * close. With one match, Enter picks it straight away.
  */
@@ -32,6 +38,7 @@ export function Combobox<T>({
   labelClassName,
   onInputKeyDown,
   floating = false,
+  tabPicks = false,
 }: {
   label: string;
   items: T[];
@@ -66,6 +73,11 @@ export function Combobox<T>({
    * cover or cut off the list.
    */
   floating?: boolean;
+  /**
+   * Tab picks the highlighted suggestion, like Enter (the order screen's product box: pick, then
+   * straight on to the dozens). With no suggestions showing, Tab moves on as usual.
+   */
+  tabPicks?: boolean;
 }) {
   const id = useId();
   const [query, setQuery] = useState("");
@@ -183,6 +195,9 @@ export function Combobox<T>({
             const item = results[active];
             if (showList && item) pick(item);
             else if (showList && offerNew && active === newIndex) addNew();
+          } else if (e.key === "Tab" && !e.shiftKey && tabPicks && showList && results[active]) {
+            e.preventDefault();
+            pick(results[active]);
           } else if (e.key === "Escape") {
             // Something to close or clear: this Esc is used up. Otherwise the website's Esc
             // applies (leave the box, then back).
@@ -223,10 +238,7 @@ export function Combobox<T>({
                   pick(item);
                 }}
                 onMouseEnter={() => setActive(i)}
-                className={cn(
-                  "cursor-pointer px-3 py-1.5 text-sm",
-                  i === active && "bg-accent text-accent-foreground",
-                )}
+                className={cn("cursor-pointer px-3 py-1.5 text-sm", i === active && ACTIVE_OPTION)}
               >
                 {render(item)}
               </li>
@@ -244,7 +256,7 @@ export function Combobox<T>({
                 className={cn(
                   "cursor-pointer px-3 py-2 text-sm font-medium",
                   results.length > 0 && "border-t",
-                  active === newIndex && "bg-accent text-accent-foreground",
+                  active === newIndex && ACTIVE_OPTION,
                 )}
               >
                 {noMatchLabel ? noMatchLabel(query.trim()) : emptyText}

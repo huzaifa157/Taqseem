@@ -2,6 +2,14 @@
 
 Running log of what has been built, decisions taken, and open items. Newest first.
 
+## Faster entry: clear suggestion highlight, Tab picks, day-end cash filled — done (0.1.2)
+
+- **Suggestion highlight** (`Combobox`, every search list): the option ↑/↓ or the mouse is on has a green tint, a solid green bar on the left and bold text (`ACTIVE_OPTION`); the theme's accent grey was nearly white.
+- **Tab picks** the highlighted product (`Combobox` `tabPicks`, on the order / counter product box): code → Tab → dozens → Tab Tab → next code. With no suggestions showing, Tab moves on as usual. "All shortcuts" says "Enter or Tab".
+- **Trip day-end:** "All delivered" fills Cash with the bill amount, "Refused all" sets Cash to 0 (0 is the same as no payment); type over it when they paid less, more, or old dues.
+- Browser-checked on localhost: Tab after one letter (`d` → Daal Moth) and after a full code, ↓ then Tab; day-end trip #2 (956.00 / 0 / typed 500, totals follow).
+- Version 0.1.2.
+
 ## Cloud backup on a weak connection: no stuck first copy — done
 
 Seen on the office laptop when it switched to the new Neon project: the first full copy lost its connection halfway (weak internet). Neon kept that `pg_restore` session open, "idle in transaction" with its locks, and the laptop's next try waited behind it with no end (fixed by hand by ending the orphan session; the copy then finished: 41 tables, 1 business, 56 products).

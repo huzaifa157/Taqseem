@@ -834,6 +834,7 @@ export function OrderEntry({
                         label="Add product"
                         hideLabel
                         floating
+                        tabPicks
                         inputClassName="h-7 border-brand/50 bg-background focus-visible:border-brand focus-visible:ring-brand/20"
                         items={products}
                         getKey={(p) => p.id}
@@ -1131,7 +1132,7 @@ function StockPill({ packets }: { packets: number }) {
 /** The keyboard shortcuts of the order screen. */
 function ShortcutHelp({ counter }: { counter: boolean }) {
   const keys: [string, string][] = [
-    ["Enter", "add the item, then type dozens (3.5)"],
+    ["Enter or Tab", "add the highlighted item, then type dozens (3.5)"],
     ["Enter / Tab Tab", "next item"],
     ["Alt+R", "customer's discount on the line"],
     ["Ctrl+Delete", "remove the line"],
