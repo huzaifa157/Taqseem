@@ -120,6 +120,8 @@ export type Totals = {
   taxAmount: Decimal;
   netAmount: Decimal;
   quantity: number;
+  /** The bill's special discount (or this company's share of it); included in discountAmount. */
+  specialDiscount: Decimal;
 };
 
 const emptyTotals = (): Totals => ({
@@ -128,6 +130,7 @@ const emptyTotals = (): Totals => ({
   taxAmount: ZERO,
   netAmount: ZERO,
   quantity: 0,
+  specialDiscount: ZERO,
 });
 
 function add(
@@ -140,15 +143,46 @@ function add(
     taxAmount: t.taxAmount.add(l.taxAmount),
     netAmount: t.netAmount.add(l.netAmount),
     quantity: t.quantity + l.quantity,
+    specialDiscount: t.specialDiscount,
   };
 }
 
-/** Bill totals, overall and per company (each company's slice posts to its customer ledger). */
+/**
+ * Splits a special discount over the bill's companies in proportion to their amounts, in paisa;
+ * the rounding difference goes to the largest company, so the shares add up exactly. Never more
+ * than the bill (capped at its total).
+ */
+export function splitSpecialDiscount(
+  byCompanyNet: Map<string, DecimalValue>,
+  special: DecimalValue,
+): Map<string, Decimal> {
+  const nets = [...byCompanyNet].map(([id, v]) => [id, Decimal.max(D(v), ZERO)] as const);
+  const total = nets.reduce((s, [, v]) => s.add(v), ZERO);
+  const amount = Decimal.min(Decimal.max(D(special), ZERO), total);
+  const shares = new Map<string, Decimal>();
+  if (amount.isZero()) return shares;
+  let given = ZERO;
+  for (const [id, net] of nets) {
+    const share = amount.mul(net).div(total).toDecimalPlaces(2, Decimal.ROUND_DOWN);
+    shares.set(id, share);
+    given = given.add(share);
+  }
+  const largest = nets.reduce((a, b) => (b[1].gt(a[1]) ? b : a))[0];
+  shares.set(largest, shares.get(largest)!.add(amount.sub(given)));
+  return shares;
+}
+
+/**
+ * Bill totals, overall and per company (each company's slice posts to its customer ledger). A
+ * special discount on the whole bill is taken off each company's slice by its share
+ * (splitSpecialDiscount) and counted in the discount.
+ */
 export function billTotals(
   lines: Pick<
     PricedLine,
     "companyId" | "grossAmount" | "discountAmount" | "taxAmount" | "netAmount" | "quantity"
   >[],
+  specialDiscount: DecimalValue = 0,
 ) {
   let total = emptyTotals();
   const byCompany = new Map<string, Totals>();
@@ -156,7 +190,44 @@ export function billTotals(
     total = add(total, line);
     byCompany.set(line.companyId, add(byCompany.get(line.companyId) ?? emptyTotals(), line));
   }
+  const shares = splitSpecialDiscount(
+    new Map([...byCompany].map(([id, t]) => [id, t.netAmount])),
+    specialDiscount,
+  );
+  for (const [id, share] of shares) {
+    const t = byCompany.get(id)!;
+    byCompany.set(id, {
+      ...t,
+      discountAmount: t.discountAmount.add(share),
+      netAmount: t.netAmount.sub(share),
+      specialDiscount: share,
+    });
+    total = {
+      ...total,
+      discountAmount: total.discountAmount.add(share),
+      netAmount: total.netAmount.sub(share),
+      specialDiscount: total.specialDiscount.add(share),
+    };
+  }
   return { total, byCompany };
+}
+
+/**
+ * A special discount as typed under the grid: rupees off the whole bill, from 0 up to the bill's
+ * amount. Blank = none.
+ */
+export function readSpecialDiscount(
+  value: string | null | undefined,
+  billAmount: DecimalValue,
+): { discount: Decimal; error?: string } {
+  const text = (value ?? "").trim().replace(/,/g, "");
+  if (text === "") return { discount: ZERO };
+  if (!/^\d+(\.\d{1,2})?$/.test(text))
+    return { discount: ZERO, error: "Special discount: an amount in rupees, e.g. 50" };
+  const discount = D(text);
+  if (discount.gt(D(billAmount)))
+    return { discount: ZERO, error: "Special discount: cannot be more than the bill" };
+  return { discount };
 }
 
 export type CreditCheck = {

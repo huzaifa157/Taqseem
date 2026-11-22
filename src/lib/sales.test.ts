@@ -9,6 +9,8 @@ import {
   priceLine,
   priceLineFor,
   readCustomerDiscount,
+  readSpecialDiscount,
+  splitSpecialDiscount,
 } from "./sales";
 
 const chips = {
@@ -91,6 +93,37 @@ describe("billTotals", () => {
     expect([total.netAmount.toFixed(2), total.quantity]).toEqual(["1017.00", 54]);
     expect(byCompany.get("c1")!.netAmount.toFixed(2)).toBe("672.00");
     expect(byCompany.get("c2")!.netAmount.toFixed(2)).toBe("345.00");
+  });
+});
+
+describe("special discount on the whole bill", () => {
+  const lines = [priceLine(chips, 24), priceLine(nimko, 18), priceLine(chips, 12)];
+
+  it("comes off each company's slice by its share and adds up exactly", () => {
+    // 672 and 345 of 1017: 100 splits 66.07 + 33.92, the paisa left over to the larger.
+    const { total, byCompany } = billTotals(lines, "100");
+    expect(total.netAmount.toFixed(2)).toBe("917.00");
+    expect(total.specialDiscount.toFixed(2)).toBe("100.00");
+    expect(byCompany.get("c1")!.specialDiscount.toFixed(2)).toBe("66.08");
+    expect(byCompany.get("c2")!.specialDiscount.toFixed(2)).toBe("33.92");
+    expect(byCompany.get("c1")!.netAmount.add(byCompany.get("c2")!.netAmount).toFixed(2)).toBe(
+      "917.00",
+    );
+    // Counted in the discount: gross − discount = net still holds.
+    expect(total.grossAmount.sub(total.discountAmount).toFixed(2)).toBe("917.00");
+  });
+
+  it("is never more than the bill, and nothing when blank", () => {
+    expect(billTotals(lines, "5000").total.netAmount.toFixed(2)).toBe("0.00");
+    expect(billTotals(lines).total.specialDiscount.toFixed(2)).toBe("0.00");
+    expect(splitSpecialDiscount(new Map(), "50").size).toBe(0);
+  });
+
+  it("reads what was typed", () => {
+    expect(readSpecialDiscount("", "1000").discount.toFixed(2)).toBe("0.00");
+    expect(readSpecialDiscount("1,50", "1000").discount.toFixed(2)).toBe("150.00");
+    expect(readSpecialDiscount("abc", "1000").error).toMatch(/rupees/);
+    expect(readSpecialDiscount("1001", "1000").error).toMatch(/more than the bill/);
   });
 });
 

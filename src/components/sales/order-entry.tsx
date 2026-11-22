@@ -28,6 +28,7 @@ import {
   type PricedLine,
   priceLineFor,
   readCustomerDiscount,
+  readSpecialDiscount,
 } from "@/lib/sales";
 import { formatDozens, PACKETS_PER_HALF_DOZEN, parseQuantity, quantityText } from "@/lib/units";
 import { orderEntryContextAction } from "@/server/sales-actions";
@@ -98,8 +99,8 @@ function halfDozens(qty: string): number | null {
 /**
  * Keyboard-first order entry:
  *  1. type the customer (name, shop, phone or area) → Enter;
- *  2. type a product code or name → Enter → type dozens → Enter, or Tab Tab (past the discount),
- *     back to the product box in the grid's entry row, under the last line. Enter in the
+ *  2. type a product code or name → Enter → type dozens → Enter (or Tab) to the discount →
+ *     Enter (or Tab) back to the product box in the grid's entry row, under the last line. Enter in the
  *     header (dates, note, new customer) moves to the next box, and from the last one into
  *     the grid;
  *  3. Ctrl+Enter books the order. In a dozens box: Alt+R the customer's discount, Ctrl+Delete
@@ -135,6 +136,18 @@ export function OrderEntry({
     source?: string;
     note?: string;
     lines?: Line[];
+    /** Rupees off the whole bill, as saved (blank: none). */
+    specialDiscount?: string;
+    /** Correcting a counter sale: what was paid at the counter (`full`: the whole bill). */
+    payment?: {
+      amount: string;
+      method: string;
+      reference: string;
+      chequeNo: string;
+      bankName: string;
+      chequeDate: string;
+      full: boolean;
+    };
   };
   /** "counter": a sale collected at the warehouse, posted when saved, with payment taken now. */
   mode?: "order" | "counter";
@@ -172,6 +185,8 @@ export function OrderEntry({
   const [contextError, setContextError] = useState<string | null>(null);
   const [loading, startLoading] = useTransition();
   const [lines, setLines] = useState<Line[]>(initial.lines ?? []);
+  // Special discount: rupees off the whole bill, typed under the grid.
+  const [special, setSpecial] = useState(initial.specialDiscount ?? "");
   const [allowOver, setAllowOver] = useState(false);
   // A customer not in the list yet: created with the order from name and phone.
   const [newCustomer, setNewCustomer] = useState<{
@@ -182,10 +197,13 @@ export function OrderEntry({
   const newArea = areas.find((a) => a.id === newCustomer?.areaId);
   // A new counter customer without an area is served from the chosen warehouse.
   const newWarehouseId = newArea?.warehouseId ?? (counter ? warehouseId || warehouses[0]?.id : "");
-  const [paid, setPaid] = useState("");
-  // Most counter customers pay the whole bill: ticked by default, untick to enter an amount.
-  const [paidFull, setPaidFull] = useState(counter);
-  const [method, setMethod] = useState("CASH");
+  const [paid, setPaid] = useState(
+    initial.payment && !initial.payment.full ? initial.payment.amount : "",
+  );
+  // Most counter customers pay the whole bill: ticked by default, untick to enter an amount. A
+  // corrected sale starts as it was saved.
+  const [paidFull, setPaidFull] = useState(counter && (isNew || Boolean(initial.payment?.full)));
+  const [method, setMethod] = useState(initial.payment?.method ?? "CASH");
   const productSearch = useRef<HTMLInputElement>(null);
   const customerSearch = useRef<HTMLInputElement>(null);
   const [noteOpen, setNoteOpen] = useState(Boolean(initial.note));
@@ -270,7 +288,10 @@ export function OrderEntry({
         product,
       });
   }
-  const { total, byCompany } = billTotals(priced);
+  const specialRead = readSpecialDiscount(special, billTotals(priced).total.netAmount);
+  const { total, byCompany } = billTotals(priced, specialRead.discount);
+  const lineDiscounts = total.discountAmount.sub(total.specialDiscount);
+  const specialError = specialRead.error ?? fieldError(state, "specialDiscount");
   const paidNow = paidFull
     ? Number(total.netAmount.toString())
     : /^\d+(\.\d{1,2})?$/.test(paid.trim())
@@ -392,11 +413,19 @@ export function OrderEntry({
             target.type !== "radio") ||
             target instanceof HTMLSelectElement)
         ) {
-          // Plain Enter never submits by accident. In a line it goes back to the product box;
-          // in the header to the next box (the customer box handles its own Enter).
+          // Plain Enter never submits by accident. In a line: dozens → discount → back to the
+          // product box (like Tab); in the header to the next box (the customer box handles its
+          // own Enter).
           e.preventDefault();
-          if (target.name === "quantity" || target.name === "discount")
-            focusEntryBox(productSearch.current);
+          if (target.name === "specialDiscount") {
+            // Then what was paid (counter), which usually follows the discount.
+            const paidBox = document.getElementById("counter-paidAmount");
+            if (paidBox instanceof HTMLInputElement && !paidBox.readOnly) paidBox.select();
+          } else if (target.name === "quantity") {
+            const discount = document.getElementById(target.id.replace(/^qty-/, "discount-"));
+            if (discount instanceof HTMLInputElement) discount.select();
+            else focusEntryBox(productSearch.current);
+          } else if (target.name === "discount") focusEntryBox(productSearch.current);
           else if (target.getAttribute("role") !== "combobox") nextHeaderField(target);
         } else if (target instanceof HTMLInputElement && target.name === "quantity") {
           const productId = target.id.replace(/^qty-/, "");
@@ -698,7 +727,7 @@ export function OrderEntry({
         <h2 id="lines-heading" className="sr-only">
           {counter ? "Sale" : "Order"} lines
         </h2>
-        <div className="bg-card border-foreground overflow-hidden rounded-xl border shadow-xs">
+        <div className="bg-card border-grid-strong overflow-hidden rounded-xl border shadow-xs">
           {/* Its height is fitted to the window (fitGridToWindow), so lines never push the page. */}
           <div ref={gridScrollRef} className="h-[22rem] overflow-auto">
             <table className="w-full text-sm">
@@ -893,18 +922,18 @@ export function OrderEntry({
               </tbody>
             </table>
           </div>
-          <div className="bg-muted/40 border-foreground flex flex-wrap items-center justify-between gap-x-6 gap-y-1 border-t px-4 py-1.5">
+          <div className="bg-muted/40 border-grid-strong flex flex-wrap items-center justify-between gap-x-6 gap-y-1 border-t px-4 py-1.5">
             <div className="text-muted-foreground flex flex-wrap items-center gap-x-2 text-sm">
               <span>
                 {lines.length} {lines.length === 1 ? "item" : "items"}
               </span>
-              {total.discountAmount.gt(0) ? (
+              {lineDiscounts.gt(0) ? (
                 <>
                   <span aria-hidden>·</span>
                   <span>
                     Discount given{" "}
                     <span className="text-foreground font-semibold tabular-nums">
-                      {formatMoney(total.discountAmount)}
+                      {formatMoney(lineDiscounts)}
                     </span>
                   </span>
                 </>
@@ -915,6 +944,41 @@ export function OrderEntry({
               <span className="text-xs pointer-coarse:hidden">
                 <ShortcutHelp counter={counter} />
               </span>
+            </div>
+            <div className="flex items-center gap-3">
+              {/* Special discount: rupees off the whole bill, split over its companies. */}
+              <label htmlFor="specialDiscount" className={HEADER_LABEL}>
+                Special discount
+              </label>
+              <div
+                className={cn(
+                  "bg-background focus-within:border-ring focus-within:ring-ring/40 flex h-9 items-center gap-1 rounded-md border px-2 focus-within:ring-2",
+                  specialError && "border-destructive",
+                )}
+              >
+                <span className="text-muted-foreground text-sm">Rs</span>
+                <input
+                  id="specialDiscount"
+                  name="specialDiscount"
+                  inputMode="decimal"
+                  autoComplete="off"
+                  placeholder="0"
+                  className="w-20 bg-transparent text-right font-semibold tabular-nums outline-none"
+                  value={special}
+                  onChange={(e) => setSpecial(e.target.value)}
+                  disabled={!hasProducts}
+                  title={
+                    specialError ??
+                    "Rupees off the whole bill (on top of the line discounts). Printed on the bill as Special discount."
+                  }
+                  aria-invalid={specialError ? true : undefined}
+                />
+              </div>
+              {specialError ? (
+                <span role="alert" className="text-destructive text-xs">
+                  {specialError}
+                </span>
+              ) : null}
             </div>
             <p className="flex items-baseline gap-3">
               {/* Total quantity next to the bill total, as large, so both are read together. */}
@@ -979,6 +1043,7 @@ export function OrderEntry({
               setMethod={setMethod}
               total={total.netAmount.toString()}
               onAccount={onAccount}
+              defaults={initial.payment}
             />
           ) : null}
           <div className="ml-auto flex flex-wrap items-center gap-2">
@@ -1018,7 +1083,15 @@ export function OrderEntry({
               disabled={cannotSave}
               className="bg-brand text-brand-foreground hover:bg-brand/90 h-10 px-4"
             >
-              {saving ? "Saving…" : counter ? "Save sale" : isNew ? "Book order" : "Save changes"}
+              {saving
+                ? "Saving…"
+                : counter
+                  ? isNew
+                    ? "Save sale"
+                    : "Save correction"
+                  : isNew
+                    ? "Book order"
+                    : "Save changes"}
               {/* The amount too on wide screens; on a laptop the bar stays one line. */}
               {!saving && lines.length > 0 ? (
                 <span className="hidden tabular-nums 2xl:inline">
@@ -1133,7 +1206,7 @@ function StockPill({ packets }: { packets: number }) {
 function ShortcutHelp({ counter }: { counter: boolean }) {
   const keys: [string, string][] = [
     ["Enter or Tab", "add the highlighted item, then type dozens (3.5)"],
-    ["Enter / Tab Tab", "next item"],
+    ["Enter or Tab", "dozens → discount → next item"],
     ["Alt+R", "customer's discount on the line"],
     ["Ctrl+Delete", "remove the line"],
     ["Alt+L", "repeat last order"],
@@ -1148,7 +1221,7 @@ function ShortcutHelp({ counter }: { counter: boolean }) {
       </summary>
       <dl className="bg-popover text-popover-foreground absolute bottom-full left-0 z-30 mb-2 grid w-max grid-cols-[auto_auto] gap-x-3 gap-y-1 rounded-md border p-3 text-xs shadow-md">
         {keys.map(([key, what]) => (
-          <div key={key} className="contents">
+          <div key={`${key}:${what}`} className="contents">
             <dt>
               <Kbd>{key}</Kbd>
             </dt>
@@ -1165,7 +1238,7 @@ function GridTh({ children, className }: { children?: React.ReactNode; className
     <th
       scope="col"
       className={cn(
-        "text-foreground border-foreground/85 border-b-foreground border-r border-b px-3 py-2 text-left text-[11px] font-semibold tracking-wider whitespace-nowrap uppercase last:border-r-0",
+        "text-foreground border-grid-line border-b-grid-strong border-r border-b px-3 py-2 text-left text-[11px] font-semibold tracking-wider whitespace-nowrap uppercase last:border-r-0",
         className,
       )}
     >
@@ -1188,7 +1261,7 @@ function GridTd({
       colSpan={colSpan}
       className={cn(
         // Voucher-style lines: rows and columns plain to see, a little lighter between columns.
-        "border-foreground/85 border-b-foreground/85 border-r border-b px-3 py-0.5 align-middle last:border-r-0",
+        "border-grid-line border-r border-b px-3 py-0.5 align-middle last:border-r-0",
         className,
       )}
     >
@@ -1599,6 +1672,7 @@ function PaidNow({
   setMethod,
   total,
   onAccount,
+  defaults,
 }: {
   state: ActionState;
   paid: string;
@@ -1609,6 +1683,8 @@ function PaidNow({
   setMethod: (v: string) => void;
   total: string;
   onAccount: number;
+  /** A corrected sale's cheque or online details, as saved. */
+  defaults?: { reference: string; chequeNo: string; bankName: string; chequeDate: string };
 }) {
   const extra = (
     name: string,
@@ -1695,12 +1771,21 @@ function PaidNow({
       </div>
       {method === "CHEQUE" ? (
         <>
-          {extra("chequeNo", "Cheque no.", "w-28", { maxLength: 30 })}
-          {extra("bankName", "Bank", "w-32", { maxLength: 60 })}
-          {extra("chequeDate", "Cheque date", "w-36", { type: "date" })}
+          {extra("chequeNo", "Cheque no.", "w-28", {
+            maxLength: 30,
+            defaultValue: defaults?.chequeNo,
+          })}
+          {extra("bankName", "Bank", "w-32", { maxLength: 60, defaultValue: defaults?.bankName })}
+          {extra("chequeDate", "Cheque date", "w-36", {
+            type: "date",
+            defaultValue: defaults?.chequeDate,
+          })}
         </>
       ) : method === "ONLINE" ? (
-        extra("reference", "Reference (bank, Easypaisa …)", "w-52", { maxLength: 80 })
+        extra("reference", "Reference (bank, Easypaisa …)", "w-52", {
+          maxLength: 80,
+          defaultValue: defaults?.reference,
+        })
       ) : null}
       <div aria-live="polite">
         <p className={HEADER_LABEL}>Goes on account</p>

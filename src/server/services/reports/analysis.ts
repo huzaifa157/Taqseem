@@ -68,7 +68,11 @@ export async function businessAnalysis(ctx: ServiceCtx, kind: PeriodKind, date: 
         billDate: true,
         customerId: true,
         netAmount: true,
-        revisions: { orderBy: { revision: "desc" }, take: 1, select: { lines: true } },
+        revisions: {
+          orderBy: { revision: "desc" },
+          take: 1,
+          select: { lines: true, companyTotals: true },
+        },
       },
     }),
     ctx.db.product.findMany({
@@ -160,6 +164,15 @@ export async function businessAnalysis(ctx: ServiceCtx, kind: PeriodKind, date: 
         a.cost = a.cost.add(cost);
         map.set(key, row);
       }
+    }
+    // A special discount on the whole bill comes off each company's sales by its share.
+    const totals = (b.revisions[0]?.companyTotals ?? []) as {
+      companyId: string;
+      specialDiscount?: string;
+    }[];
+    for (const t of totals) {
+      const row = t.specialDiscount ? byCompany.get(t.companyId) : undefined;
+      if (row) row[which].amount = row[which].amount.sub(t.specialDiscount!);
     }
   }
   const sentBack = new Map<string, { sent: number; back: number }>();

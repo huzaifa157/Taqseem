@@ -26,7 +26,7 @@ type SnapshotLine = {
   discountAmount: string;
   netAmount: string;
 };
-type SnapshotCompany = { companyId: string; netAmount: string };
+type SnapshotCompany = { companyId: string; netAmount: string; specialDiscount?: string };
 /** `Bill.previousByCompany`, written at dispatch. */
 export type FrozenPrevious = { companyId: string; amount: string }[];
 
@@ -99,6 +99,8 @@ export async function getBillView(ctx: ServiceCtx, orderId: string) {
         companyName: companyName.get(c.companyId) ?? "",
         lines: lines.filter((l) => l.companyId === c.companyId),
         thisBill: D(c.netAmount),
+        /** This company's share of the special discount (already off `thisBill`). */
+        specialDiscount: D(c.specialDiscount ?? 0),
         previous,
         totalDue: previous.add(c.netAmount),
       };
@@ -132,6 +134,8 @@ export async function getBillView(ctx: ServiceCtx, orderId: string) {
       grossAmount: D(revision.grossAmount),
       discountAmount: D(revision.discountAmount),
       netAmount: D(revision.netAmount),
+      /** Rupees off the whole bill (in `discountAmount`, already off `netAmount`). */
+      specialDiscount: companyTotals.reduce((s, c) => s.add(c.specialDiscount ?? 0), D(0)),
     },
     lines,
     sections,

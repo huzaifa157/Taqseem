@@ -244,13 +244,14 @@ export async function saveDayEnd(ctx: ServiceCtx, input: unknown) {
         discountValue: l.discountValue.toString(),
       }));
       const kept = deliveredLines(booked, results);
-      const bookedByCompany = new Map<string, Prisma.Decimal>();
-      for (const l of order.lines)
-        bookedByCompany.set(
-          l.companyId,
-          (bookedByCompany.get(l.companyId) ?? D(0)).add(l.netAmount),
-        );
-      const newTotals = billTotals(kept);
+      // As posted at dispatch: the booked lines less each company's share of the special discount.
+      const bookedByCompany = new Map(
+        [...billTotals(order.lines, order.specialDiscount.toString()).byCompany].map(
+          ([companyId, t]) => [companyId, D(t.netAmount.toString())],
+        ),
+      );
+      // The special discount stays (never more than what was kept).
+      const newTotals = billTotals(kept, order.specialDiscount.toString());
       if (results.length > 0) {
         const revision = bill.currentRevision + 1;
         await tx.bill.update({
@@ -269,11 +270,19 @@ export async function saveDayEnd(ctx: ServiceCtx, input: unknown) {
               `${names.get(r.productId)}${r.returned ? ` returned ${formatDozens(r.returned)}` : ""}${r.damaged ? ` damaged ${formatDozens(r.damaged)}` : ""}`,
           )
           .join("; ");
-        await writeBillRevision(tx, ctx, bill.id, revision, `Day-end: ${summary}`, kept);
+        await writeBillRevision(
+          tx,
+          ctx,
+          bill.id,
+          revision,
+          `Day-end: ${summary}`,
+          kept,
+          order.specialDiscount.toString(),
+        );
         for (const [companyId, old] of bookedByCompany) {
           const now = D((newTotals.byCompany.get(companyId)?.netAmount ?? 0).toString());
           const less = old.sub(now);
-          if (less.lte(0)) continue;
+          if (less.isZero()) continue;
           await tx.ledgerEntry.create({
             data: {
               tenantId: ctx.user.tenantId,
@@ -282,7 +291,9 @@ export async function saveDayEnd(ctx: ServiceCtx, input: unknown) {
               companyId,
               type: "BILL_REVISION",
               entryDate: date,
-              credit: less,
+              // Less, usually; a company can get a smaller share of the special discount when
+              // another company's goods come back (a few paisa more, as a debit).
+              ...(less.gt(0) ? { credit: less } : { debit: less.neg() }),
               description: `Bill #${bill.number} revised at day-end (returns / damage)`,
               referenceType: "Bill",
               referenceId: bill.id,
@@ -565,7 +576,7 @@ export async function undoDayEnd(ctx: ServiceCtx, input: unknown) {
         taxAmount: l.taxAmount,
         netAmount: l.netAmount,
       }));
-      const totals = billTotals(dispatched).total;
+      const totals = billTotals(dispatched, order.specialDiscount.toString()).total;
       if (!D(totals.netAmount.toString()).eq(bill.netAmount)) {
         const revision = bill.currentRevision + 1;
         await tx.bill.update({
@@ -585,6 +596,7 @@ export async function undoDayEnd(ctx: ServiceCtx, input: unknown) {
           revision,
           `Day-end undone: ${reason}`,
           dispatched,
+          order.specialDiscount.toString(),
         );
         await reverseLedgerFor(
           tx,

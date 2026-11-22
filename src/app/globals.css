@@ -1,10 +1,26 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
-@custom-variant dark (&:is(.dark *));
+/*
+ * Themes (picked in the sidebar, kept per computer; see components/layout/theme-picker.tsx):
+ *   Taqseem          :root          the default: white, with the logo's green for actions
+ *   Black & white    [data-theme=mono]   ink on paper: black actions, crisp grey hierarchy
+ *   Black            [data-theme=black]  the dark version, for evening work
+ * Only on screen: printing always uses the default (black on white paper). Bills, statements,
+ * trip sheets and report sheets (.paper, .print-sheet) stay white paper in every theme.
+ */
+@custom-variant dark {
+  @media screen {
+    &:where([data-theme="black"], [data-theme="black"] *) {
+      @slot;
+    }
+  }
+}
 
 /* shadcn/ui theme tokens (new-york, neutral). Kept high-contrast so screens and prints work in black and white. */
-:root {
+:root,
+.paper,
+.print-sheet {
   --radius: 0.625rem;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
@@ -41,42 +57,120 @@
   --brand: oklch(0.45 0.09 165);
   --brand-foreground: oklch(0.985 0 0);
   --warning: oklch(0.75 0.15 75);
+  /* Lines of the order grid (voucher style). */
+  --grid-line: oklch(0.145 0 0 / 85%);
+  --grid-strong: oklch(0.145 0 0);
+  color-scheme: light;
 }
 
-.dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
-  --series-1: #3987e5;
-  --series-2: #d95926;
-  --chart-grid: #2c2c2a;
-  --chart-axis: #383835;
-  --brand: oklch(0.7 0.12 165);
-  --brand-foreground: oklch(0.18 0.02 165);
-  --warning: oklch(0.8 0.14 80);
+@media screen {
+  /* Black & white: pure white paper, near-black ink, every action in black. Red stays for errors
+     and amber for warnings: they carry meaning, not decoration. */
+  :root[data-theme="mono"] {
+    --radius: 0.5rem;
+    --background: oklch(1 0 0);
+    --foreground: oklch(0.13 0 0);
+    --card: oklch(1 0 0);
+    --card-foreground: oklch(0.13 0 0);
+    --popover: oklch(1 0 0);
+    --popover-foreground: oklch(0.13 0 0);
+    --primary: oklch(0.13 0 0);
+    --primary-foreground: oklch(1 0 0);
+    --secondary: oklch(0.955 0 0);
+    --secondary-foreground: oklch(0.13 0 0);
+    --muted: oklch(0.962 0 0);
+    --muted-foreground: oklch(0.43 0 0);
+    --accent: oklch(0.94 0 0);
+    --accent-foreground: oklch(0.13 0 0);
+    --destructive: oklch(0.55 0.21 27);
+    --border: oklch(0.85 0 0);
+    --input: oklch(0.78 0 0);
+    --ring: oklch(0.13 0 0);
+    --sidebar: oklch(0.975 0 0);
+    --sidebar-foreground: oklch(0.13 0 0);
+    --sidebar-primary: oklch(0.13 0 0);
+    --sidebar-primary-foreground: oklch(1 0 0);
+    --sidebar-accent: oklch(0.92 0 0);
+    --sidebar-accent-foreground: oklch(0.13 0 0);
+    --sidebar-border: oklch(0.85 0 0);
+    --sidebar-ring: oklch(0.13 0 0);
+    --series-1: #1a1a1a;
+    --series-2: #9b9b9b;
+    --chart-grid: #e6e6e6;
+    --chart-axis: #bdbdbd;
+    --brand: oklch(0.13 0 0);
+    --brand-foreground: oklch(1 0 0);
+    --warning: oklch(0.72 0.14 75);
+    --grid-line: oklch(0.13 0 0 / 85%);
+    --grid-strong: oklch(0.13 0 0);
+  }
+
+  /* Black: a deep charcoal desk, raised cards a step lighter, white actions with black text. */
+  :root[data-theme="black"] {
+    --radius: 0.5rem;
+    --background: oklch(0.13 0 0);
+    --foreground: oklch(0.96 0 0);
+    --card: oklch(0.175 0 0);
+    --card-foreground: oklch(0.96 0 0);
+    --popover: oklch(0.2 0 0);
+    --popover-foreground: oklch(0.96 0 0);
+    --primary: oklch(0.96 0 0);
+    --primary-foreground: oklch(0.13 0 0);
+    --secondary: oklch(0.24 0 0);
+    --secondary-foreground: oklch(0.96 0 0);
+    --muted: oklch(0.225 0 0);
+    --muted-foreground: oklch(0.72 0 0);
+    --accent: oklch(0.26 0 0);
+    --accent-foreground: oklch(0.98 0 0);
+    --destructive: oklch(0.7 0.19 22);
+    --border: oklch(1 0 0 / 13%);
+    --input: oklch(1 0 0 / 20%);
+    --ring: oklch(0.85 0 0);
+    --sidebar: oklch(0.105 0 0);
+    --sidebar-foreground: oklch(0.96 0 0);
+    --sidebar-primary: oklch(0.96 0 0);
+    --sidebar-primary-foreground: oklch(0.13 0 0);
+    --sidebar-accent: oklch(0.22 0 0);
+    --sidebar-accent-foreground: oklch(0.98 0 0);
+    --sidebar-border: oklch(1 0 0 / 10%);
+    --sidebar-ring: oklch(0.85 0 0);
+    --series-1: #f0f0f0;
+    --series-2: #7d7d7d;
+    --chart-grid: #2a2a2a;
+    --chart-axis: #4a4a4a;
+    --brand: oklch(0.96 0 0);
+    --brand-foreground: oklch(0.13 0 0);
+    --warning: oklch(0.8 0.14 80);
+    --grid-line: oklch(1 0 0 / 30%);
+    --grid-strong: oklch(1 0 0 / 55%);
+    color-scheme: dark;
+  }
+
+  /* The current page in the sidebar: an ink pill (inverted), so it is plain where you are. */
+  :root:is([data-theme="mono"], [data-theme="black"])
+    nav[aria-label="Main"]
+    a[aria-current="page"] {
+    background: var(--sidebar-primary);
+    color: var(--sidebar-primary-foreground);
+  }
+
+  /* The green logo, in greyscale: dark ink on white, light on black. */
+  :root[data-theme="mono"] img[src*="taqseem-mark"] {
+    filter: grayscale(1) brightness(0.45) contrast(1.6);
+  }
+  :root[data-theme="black"] img[src*="taqseem-mark"] {
+    filter: grayscale(1) brightness(1.7) contrast(1.1);
+  }
+
+  /* Black theme: printable sheets show as white paper on the dark desk, as they will print. */
+  :root[data-theme="black"] :is(.paper, .print-sheet) {
+    background-color: var(--background);
+    color: var(--foreground);
+  }
+  :root[data-theme="black"] .print-sheet:not(.bg-white) {
+    border-radius: var(--radius);
+    padding: 1.25rem 1.5rem;
+  }
 }
 
 @theme inline {
@@ -97,6 +191,8 @@
   --color-brand: var(--brand);
   --color-brand-foreground: var(--brand-foreground);
   --color-warning: var(--warning);
+  --color-grid-line: var(--grid-line);
+  --color-grid-strong: var(--grid-strong);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);

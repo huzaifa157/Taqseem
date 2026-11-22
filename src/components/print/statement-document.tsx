@@ -50,7 +50,7 @@ export function StatementDocument({
   const num = `${cell} text-right tabular-nums whitespace-nowrap`;
   const cols = showCompany ? 7 : 6;
   return (
-    <article className="mx-auto max-w-[210mm] space-y-[0.8em] bg-white leading-snug text-black">
+    <article className="paper mx-auto max-w-[210mm] space-y-[0.8em] bg-white leading-snug text-black">
       <Letterhead
         business={business}
         right={

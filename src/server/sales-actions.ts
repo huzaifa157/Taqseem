@@ -15,7 +15,7 @@ import {
   type BulkRowResult,
   saveBulkOrderLayout,
 } from "./services/sales/bulk-orders";
-import { createCounterSale } from "./services/sales/counter";
+import { createCounterSale, editCounterSale } from "./services/sales/counter";
 import {
   approveCreditOverride,
   cancelSalesOrder,
@@ -111,6 +111,26 @@ export async function saveCounterSaleAction(
       : formData.get("intent") === "print"
         ? `/orders/${savedId}/bill?print=1`
         : `/orders/${savedId}?notice=sold`,
+  );
+}
+
+/** Corrects a saved counter sale, then opens it (or its bill, ready to print again). */
+export async function correctCounterSaleAction(
+  id: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const result = await runAction<undefined>(async () => {
+    const ctx = await requireTenantContext("operations.manage");
+    await editCounterSale(ctx, id, orderInput(formData));
+  }, formData);
+  if (result.status !== "success") return result;
+  revalidatePath("/orders");
+  revalidatePath("/inventory");
+  redirect(
+    formData.get("intent") === "print"
+      ? `/orders/${id}/bill?print=1`
+      : `/orders/${id}?notice=corrected`,
   );
 }
 

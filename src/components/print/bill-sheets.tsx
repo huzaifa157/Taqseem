@@ -67,7 +67,7 @@ ${LONG_SCREEN_CSS}`;
       {toSheets(bills, layout.perSheet, layout.copies).map((sheet, i) => (
         <section
           key={i}
-          className="print-sheet mx-auto overflow-x-auto border bg-white text-black shadow-sm print:mx-0 print:overflow-visible print:border-0 print:shadow-none"
+          className="print-sheet paper mx-auto overflow-x-auto border bg-white text-black shadow-sm print:mx-0 print:overflow-visible print:border-0 print:shadow-none"
           aria-label={`Sheet ${i + 1}`}
         >
           {sheet.map((b, j) => (

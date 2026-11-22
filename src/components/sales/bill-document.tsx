@@ -64,6 +64,7 @@ export function BillDocument({
   title,
   lines,
   thisBill,
+  specialDiscount,
   previous,
   oldBalance,
   totalDue,
@@ -77,6 +78,8 @@ export function BillDocument({
   title?: string;
   lines: Line[];
   thisBill: { toString(): string };
+  /** Rupees off the whole bill (or this company's share), already off `thisBill`. */
+  specialDiscount?: { toString(): string };
   previous: { toString(): string };
   /** Part of `previous` from old paper bills; shown on its own line on the full bill. */
   oldBalance?: { toString(): string };
@@ -340,6 +343,12 @@ export function BillDocument({
                       <dd>−{formatMoney(totals.discount.toFixed(2))}</dd>
                     </>
                   ) : null}
+                  {specialDiscount && !new Decimal(specialDiscount.toString()).isZero() ? (
+                    <>
+                      <dt>Special discount</dt>
+                      <dd>−{formatMoney(specialDiscount)}</dd>
+                    </>
+                  ) : null}
                   {/* What the customer pays for these goods: the biggest figure, in a box. */}
                   <div className="col-span-2 mt-[0.45em] flex items-baseline justify-between gap-3 border-[1.5px] border-black px-[0.6em] py-[0.35em]">
                     <dt className="text-[0.85em] font-bold tracking-[0.1em] uppercase">
@@ -385,6 +394,7 @@ export function CompactBillDocument({
   title,
   lines,
   thisBill,
+  specialDiscount,
   previous,
   totalDue,
   minimum,
@@ -395,6 +405,8 @@ export function CompactBillDocument({
   title?: string;
   lines: Line[];
   thisBill: { toString(): string };
+  /** Rupees off the whole bill (or this company's share), already off `thisBill`. */
+  specialDiscount?: { toString(): string };
   previous: { toString(): string };
   totalDue: { toString(): string };
   minimum?: { toString(): string };
@@ -472,6 +484,12 @@ export function CompactBillDocument({
             <dd className="tabular-nums">−{formatMoney(discount.toFixed(2))}</dd>
           </>
         ) : null}
+        {specialDiscount && !new Decimal(specialDiscount.toString()).isZero() ? (
+          <>
+            <dt>Special discount</dt>
+            <dd className="tabular-nums">−{formatMoney(specialDiscount)}</dd>
+          </>
+        ) : null}
         <dt className={THIS_BILL}>This bill</dt>
         <dd className={`${THIS_BILL} tabular-nums`}>{formatMoney(thisBill)}</dd>
         <dt className={SMALL}>Previous</dt>
@@ -521,6 +539,7 @@ export function billDocuments(
               business={business}
               lines={view.lines}
               thisBill={view.bill.netAmount}
+              specialDiscount={view.bill.specialDiscount}
               previous={view.previous}
               totalDue={view.totalDue}
               minimum={view.minimumPayment}
@@ -538,6 +557,7 @@ export function billDocuments(
           title={s.companyName}
           lines={s.lines}
           thisBill={s.thisBill}
+          specialDiscount={s.specialDiscount}
           previous={s.previous}
           totalDue={s.totalDue}
         />
@@ -554,6 +574,7 @@ export function billDocuments(
             business={business}
             lines={view.lines}
             thisBill={view.bill.netAmount}
+            specialDiscount={view.bill.specialDiscount}
             previous={view.previous}
             oldBalance={view.oldBalance}
             totalDue={view.totalDue}
@@ -575,6 +596,7 @@ export function billDocuments(
         title={`${s.companyName} portion`}
         lines={s.lines}
         thisBill={s.thisBill}
+        specialDiscount={s.specialDiscount}
         previous={s.previous}
         totalDue={s.totalDue}
         showCompany={false}

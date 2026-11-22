@@ -89,6 +89,8 @@ export const salesOrderSchema = z
     note: optionalText(500),
     allowOverCredit: allowOverCreditSchema,
     lines: orderLinesSchema,
+    /** Rupees off the whole bill (blank: none). */
+    specialDiscount: optionalMoneySchema("special discount"),
   })
   .refine((o) => o.deliveryDate >= o.orderDate, {
     path: ["deliveryDate"],
@@ -111,6 +113,8 @@ export const counterSaleSchema = z
     note: optionalText(500),
     allowOverCredit: allowOverCreditSchema,
     lines: orderLinesSchema,
+    /** Rupees off the whole bill (blank: none). */
+    specialDiscount: optionalMoneySchema("special discount"),
     /** Paid at the counter (blank: all on account). */
     paidAmount: optionalMoneySchema("amount paid"),
     method: z.enum(PAYMENT_METHODS).default("CASH"),

@@ -6,6 +6,7 @@ const NOTICES: Record<string, string> = {
   posted: "Posted.",
   booked: "Order booked.",
   sold: "Counter sale saved. Stock is out and the bill is posted to the customer ledger.",
+  corrected: "Counter sale corrected. The bill has a new revision; print it again.",
   cancelled: "Order cancelled. Its stock is free again.",
   approved: "Approved past the credit limit.",
   removed: "Removed from the trip. The order is booked again.",

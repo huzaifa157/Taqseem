@@ -49,7 +49,7 @@ export type OrderResult = {
   shortages: { productId: string; name: string; short: number }[];
 };
 
-async function loadProducts(tx: TenantTx, warehouseId: string, productIds: string[]) {
+export async function loadProducts(tx: TenantTx, warehouseId: string, productIds: string[]) {
   const products = await tx.product.findMany({
     where: { id: { in: productIds } },
     include: { company: { select: { warehouseId: true, name: true } }, discountTiers: true },
@@ -69,7 +69,7 @@ async function loadProducts(tx: TenantTx, warehouseId: string, productIds: strin
 type OrderLine = PricedLine;
 
 /** Prices each line: the product's fixed rate, with the customer's discount typed on the line. */
-function priceLines(
+export function priceLines(
   products: Awaited<ReturnType<typeof loadProducts>>,
   input: Pick<SalesOrderInput, "lines">,
 ): OrderLine[] {
@@ -97,8 +97,10 @@ function priceLines(
 }
 
 /** The customer's discount on each line (null = the product's own discount applied). */
-const lineDiscount = (l: { customerDiscount?: boolean; discountValue: { toString(): string } }) =>
-  l.customerDiscount ? money(l.discountValue) : null;
+export const lineDiscount = (l: {
+  customerDiscount?: boolean;
+  discountValue: { toString(): string };
+}) => (l.customerDiscount ? money(l.discountValue) : null);
 
 /** The warehouse comes from the customer's area; customers without an area must name one. */
 async function orderWarehouse(
@@ -117,6 +119,17 @@ async function orderWarehouse(
   return warehouse.id;
 }
 
+/**
+ * The bill's totals with the special discount typed for the whole bill (blank: none); refused
+ * when it is more than the bill.
+ */
+export function totalsWithSpecial(lines: PricedLine[], special: string | null | undefined) {
+  const amount = special ? money(special) : new Prisma.Decimal(0);
+  if (amount.gt(billTotals(lines).total.netAmount.toString()))
+    throw new ServiceError("The special discount cannot be more than the bill.");
+  return billTotals(lines, amount.toString());
+}
+
 /** Bill revision rows: an immutable snapshot of what the bill says at this point. */
 export async function writeBillRevision(
   tx: TenantTx,
@@ -125,8 +138,10 @@ export async function writeBillRevision(
   revision: number,
   reason: string,
   lines: PricedLine[],
+  /** The order's special discount on the whole bill. */
+  specialDiscount: Prisma.Decimal | string | number = 0,
 ) {
-  const { total, byCompany } = billTotals(lines);
+  const { total, byCompany } = billTotals(lines, specialDiscount.toString());
   await tx.billRevision.create({
     data: {
       tenantId: ctx.user.tenantId,
@@ -154,13 +169,14 @@ export async function writeBillRevision(
         companyId,
         netAmount: t.netAmount.toFixed(2),
         quantity: t.quantity,
+        ...(t.specialDiscount.gt(0) ? { specialDiscount: t.specialDiscount.toFixed(2) } : {}),
       })),
       createdById: ctx.user.id,
     },
   });
 }
 
-const lineRows = (ctx: ServiceCtx, lines: OrderLine[]) =>
+export const lineRows = (ctx: ServiceCtx, lines: OrderLine[]) =>
   lines.map((l) => ({
     tenantId: ctx.user.tenantId,
     productId: l.productId,
@@ -177,7 +193,7 @@ const lineRows = (ctx: ServiceCtx, lines: OrderLine[]) =>
   }));
 
 /** Credit decision: allowed by the owner, waiting for the owner, or (owner, not ticked) refused. */
-function creditDecision(ctx: ServiceCtx, credit: CreditCheck, allowOverCredit: boolean) {
+export function creditDecision(ctx: ServiceCtx, credit: CreditCheck, allowOverCredit: boolean) {
   if (!credit.over) return { needsCreditApproval: false, override: false };
   if (can(ctx.user.role, "orders.overrideCreditLimit")) {
     if (!allowOverCredit) {
@@ -234,7 +250,7 @@ export async function bookOrder(
     data.lines.map((l) => l.productId),
   );
   const lines = priceLines(products, data);
-  const { total, byCompany } = billTotals(lines);
+  const { total, byCompany } = totalsWithSpecial(lines, data.specialDiscount);
 
   const pending = await customerPending(tx, customer.id);
   // Paid at once (counter sale) does not use up credit.
@@ -262,6 +278,7 @@ export async function bookOrder(
       source: data.source,
       fulfilment: opts.fulfilment ?? "DELIVERY",
       note: data.note,
+      specialDiscount: money(total.specialDiscount),
       requestId: data.requestId,
       needsCreditApproval: decision.needsCreditApproval,
       creditOverrideById: decision.override ? ctx.user.id : null,
@@ -291,6 +308,7 @@ export async function bookOrder(
     1,
     opts.fulfilment === "COUNTER" ? "Counter sale" : "Booked",
     lines,
+    total.specialDiscount.toString(),
   );
   await writeAudit(tx, ctx.user, {
     action: "CREATE",
@@ -460,7 +478,7 @@ export async function updateSalesOrder(
         data.lines.map((l) => l.productId),
       );
       const lines = priceLines(products, data);
-      const { total } = billTotals(lines);
+      const { total } = totalsWithSpecial(lines, data.specialDiscount);
 
       const customer = await tx.customer.findUniqueOrThrow({ where: { id: before.customerId } });
       const pending = await customerPending(tx, customer.id);
@@ -504,6 +522,7 @@ export async function updateSalesOrder(
           deliveryDate: data.deliveryDate,
           source: data.source,
           note: data.note,
+          specialDiscount: money(total.specialDiscount),
           needsCreditApproval: decision.needsCreditApproval,
           creditOverrideById: decision.override ? ctx.user.id : null,
           creditOverrideAt: decision.override ? new Date() : null,
@@ -523,7 +542,15 @@ export async function updateSalesOrder(
           previousBalance: pending.total,
         },
       });
-      await writeBillRevision(tx, ctx, bill.id, revision, "Edited before dispatch", lines);
+      await writeBillRevision(
+        tx,
+        ctx,
+        bill.id,
+        revision,
+        "Edited before dispatch",
+        lines,
+        total.specialDiscount.toString(),
+      );
       await writeAudit(tx, ctx.user, {
         action: "UPDATE",
         entityType: "SalesOrder",
@@ -709,6 +736,16 @@ export async function getSalesOrder(ctx: ServiceCtx, id: string) {
         customer: { include: { area: { select: { name: true } } } },
         warehouse: { select: { name: true } },
         trip: { select: { id: true, number: true, tripDate: true } },
+        // Taken with the order (a counter sale's "paid now"), to correct the sale.
+        payments: {
+          where: { status: "POSTED" },
+          select: {
+            amount: true,
+            method: true,
+            reference: true,
+            cheque: { select: { chequeNo: true, bankName: true, chequeDate: true } },
+          },
+        },
         lines: {
           include: {
             product: { select: { code: true, name: true } },
@@ -785,14 +822,28 @@ export async function orderEntryContext(
       )
     : null;
   const warehouseId = customer?.area?.warehouseId ?? opts.warehouseId ?? null;
-  const [pending, openOrders, companies] = await Promise.all([
+  const [pending, openOrders, companies, posted] = await Promise.all([
     customer
       ? customerPending(ctx.db, customer.id)
       : { total: new Prisma.Decimal(0), oldBalance: new Prisma.Decimal(0), byCompany: new Map() },
     customer ? openOrdersTotal(ctx.db, customer.id, opts.excludeOrderId) : new Prisma.Decimal(0),
     ctx.db.company.findMany({ select: { id: true, name: true } }),
+    opts.excludeOrderId ? postedCounterSale(ctx, opts.excludeOrderId) : null,
   ]);
   const companyName = new Map(companies.map((c) => [c.id, c.name]));
+  // Correcting a counter sale: show the balance and the stock as they were before it (its bill,
+  // its payment and its stock are put back when it is saved again).
+  if (posted) {
+    for (const [companyId, amount] of posted.ledger) {
+      pending.total = pending.total.sub(amount);
+      if (companyId === null) pending.oldBalance = pending.oldBalance.sub(amount);
+      else
+        pending.byCompany.set(
+          companyId,
+          (pending.byCompany.get(companyId) ?? new Prisma.Decimal(0)).sub(amount),
+        );
+    }
+  }
 
   let products: {
     id: string;
@@ -833,8 +884,8 @@ export async function orderEntryContext(
         discountType: t.discountType as DiscountType,
         discountValue: t.discountValue.toFixed(2),
       })),
-      available: positions.get(p.id)?.available ?? 0,
-      onHand: positions.get(p.id)?.onHand ?? 0,
+      available: (positions.get(p.id)?.available ?? 0) + (posted?.stock.get(p.id) ?? 0),
+      onHand: (positions.get(p.id)?.onHand ?? 0) + (posted?.stock.get(p.id) ?? 0),
       customerDiscount: discounts.get(p.id)?.toFixed(2) ?? null,
     }));
   }
@@ -894,6 +945,56 @@ export async function orderEntryContext(
 }
 
 export type OrderEntryContext = Awaited<ReturnType<typeof orderEntryContext>>;
+
+/**
+ * What a posted counter sale still adds up to: its bill and its own payments in the customer
+ * ledger (net, per company; null = old balance) and the packets it took out of stock. Null for
+ * any other order.
+ */
+async function postedCounterSale(ctx: ServiceCtx, orderId: string) {
+  const order = await ctx.db.salesOrder.findUnique({
+    where: { id: orderId },
+    select: {
+      fulfilment: true,
+      status: true,
+      bill: { select: { id: true } },
+      payments: { select: { id: true } },
+    },
+  });
+  if (!order || order.fulfilment !== "COUNTER" || order.status !== "DELIVERED" || !order.bill)
+    return null;
+  const [ledger, stock] = await Promise.all([
+    ctx.db.ledgerEntry.groupBy({
+      by: ["companyId"],
+      where: {
+        partyType: "CUSTOMER",
+        OR: [
+          { referenceType: "Bill", referenceId: order.bill.id },
+          {
+            referenceType: "CustomerPayment",
+            referenceId: { in: order.payments.map((p) => p.id) },
+          },
+        ],
+      },
+      _sum: { debit: true, credit: true },
+    }),
+    ctx.db.stockMovement.groupBy({
+      by: ["productId"],
+      where: { referenceType: "SalesOrder", referenceId: orderId, bucket: "SALEABLE" },
+      _sum: { quantity: true },
+    }),
+  ]);
+  return {
+    ledger: new Map(
+      ledger.map((g) => [
+        g.companyId,
+        new Prisma.Decimal(g._sum.debit ?? 0).sub(g._sum.credit ?? 0),
+      ]),
+    ),
+    /** Packets to add back (the sale's movements are negative). */
+    stock: new Map(stock.map((g) => [g.productId, -(g._sum.quantity ?? 0)])),
+  };
+}
 
 /** Number and customer of an order, for the "saved" notice after "Save and enter next". */
 export function getOrderSummary(ctx: ServiceCtx, id: string) {

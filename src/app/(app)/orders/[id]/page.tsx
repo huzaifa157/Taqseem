@@ -51,13 +51,16 @@ export default async function OrderPage({ params, searchParams }: PageProps<"/or
                 </LinkButton>
               ) : null}
               {open ? <LinkButton href={`/orders/${order.id}/edit`}>Edit</LinkButton> : null}
+              {counter && order.status === "DELIVERED" ? (
+                <LinkButton href={`/orders/${order.id}/edit`}>Correct sale</LinkButton>
+              ) : null}
             </>
           }
         />
         <Notice
           notice={notice}
           next={
-            notice === "sold"
+            notice === "sold" || notice === "corrected"
               ? [
                   { href: `/orders/${id}/bill`, label: "Print bill" },
                   { href: "/orders/counter", label: "Another counter sale" },
@@ -169,6 +172,19 @@ export default async function OrderPage({ params, searchParams }: PageProps<"/or
           ))}
         </tbody>
         <tfoot>
+          {order.specialDiscount.gt(0) ? (
+            <tr>
+              <td
+                className="border-b px-3 py-2"
+                colSpan={
+                  5 + (companies.length > 1 ? 1 : 0) + (open ? 1 : 0) + (order.reconciledAt ? 1 : 0)
+                }
+              >
+                Special discount on the bill
+              </td>
+              <Td className="text-right tabular-nums">−{formatMoney(order.specialDiscount)}</Td>
+            </tr>
+          ) : null}
           <tr className="font-medium">
             <Td>Total</Td>
             <Td />
@@ -192,7 +208,9 @@ export default async function OrderPage({ params, searchParams }: PageProps<"/or
             <Td className="text-right tabular-nums">
               {order.reconciledAt
                 ? formatMoney(
-                    order.lines.reduce((s, l) => s.add(l.netAmount), new Prisma.Decimal(0)),
+                    order.lines
+                      .reduce((s, l) => s.add(l.netAmount), new Prisma.Decimal(0))
+                      .sub(order.specialDiscount),
                   )
                 : formatMoney(order.bill?.netAmount)}
             </Td>

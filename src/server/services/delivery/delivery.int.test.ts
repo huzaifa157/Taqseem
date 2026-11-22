@@ -1092,3 +1092,48 @@ describe("trip day-end on one page", () => {
     expect(after.entered[0]!.payments.map((p) => p.amount.toFixed(2))).toEqual(["100.00"]);
   });
 });
+
+describe("special discount on the whole bill", () => {
+  it("posts each company's share at dispatch, moves with returns at day-end and comes back on undo", async () => {
+    // Chips 10 dz × 196 = 1960 (Crunchy) + nimko 4 dz × 150 = 600 (Golden) = 2560, less 256.
+    const a = await book(
+      t.bilal.id,
+      [
+        [t.chips.id, "10"],
+        [t.nimko.id, "4"],
+      ],
+      { specialDiscount: "256" },
+    );
+    const tr = await trip([a.id]);
+    await dispatchTrip(t.staff, { id: tr.id });
+    const pending = () => customerPending(t.ctx.db, t.bilal.id);
+    let p = await pending();
+    expect(p.total.toFixed(2)).toBe("2304.00");
+    // 256 split 1960 : 600 = 196 : 60.
+    expect(p.byCompany.get(t.crunchy.id)!.toFixed(2)).toBe("1764.00");
+    expect(p.byCompany.get(t.golden.id)!.toFixed(2)).toBe("540.00");
+    const view = await getBillView(t.staff, a.id);
+    expect(view.bill.specialDiscount.toFixed(2)).toBe("256.00");
+    expect(view.sections.map((s) => s.specialDiscount.toFixed(2)).sort()).toEqual([
+      "196.00",
+      "60.00",
+    ]);
+
+    // All the nimko comes back: the whole special discount now falls on the chips.
+    await saveDayEnd(t.staff, {
+      orderId: a.id,
+      lines: [{ productId: t.nimko.id, returned: "4", damaged: "" }],
+    });
+    p = await pending();
+    expect(p.total.toFixed(2)).toBe("1704.00");
+    expect(p.byCompany.get(t.crunchy.id)!.toFixed(2)).toBe("1704.00");
+    expect(p.byCompany.get(t.golden.id)!.toFixed(2)).toBe("0.00");
+    const bill = await t.ctx.db.bill.findFirstOrThrow({ where: { salesOrderId: a.id } });
+    expect(bill.netAmount.toFixed(2)).toBe("1704.00");
+
+    await undoDayEnd(t.ctx, { id: a.id, reason: "wrong order" });
+    p = await pending();
+    expect(p.total.toFixed(2)).toBe("2304.00");
+    expect(p.byCompany.get(t.crunchy.id)!.toFixed(2)).toBe("1764.00");
+  });
+});

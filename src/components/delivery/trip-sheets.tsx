@@ -23,7 +23,7 @@ export function LoadingSheet({ trip, business }: { trip: TripView; business: Bus
   const head = "border-y border-black px-[0.3em] py-[0.15em] text-left font-semibold";
   return (
     <section
-      className="loading-page flex flex-col gap-[0.6em] bg-white leading-snug text-black"
+      className="loading-page paper flex flex-col gap-[0.6em] bg-white leading-snug text-black"
       data-fit-page
       aria-label="Loading sheet"
     >
@@ -157,7 +157,7 @@ export function DriverSheet({ trip, business }: { trip: DriverSheetView; busines
   const box = "border border-black/60 px-[0.4em] py-[0.2em]";
   return (
     <section
-      className="space-y-[0.6em] bg-white leading-tight text-black"
+      className="paper space-y-[0.6em] bg-white leading-tight text-black"
       aria-label="Driver sheet"
     >
       <Letterhead

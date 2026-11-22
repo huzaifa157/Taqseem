@@ -261,6 +261,8 @@ export async function reversePayment(
   id: string,
   reason: string,
   type: "REVERSAL" | "CHEQUE_BOUNCE",
+  /** When the reversal is entered in the ledger (default today; a corrected sale: its date). */
+  entryDate: Date = businessToday(),
 ) {
   const payment = found(
     await tx.customerPayment.findUnique({ where: { id }, include: { cheque: true } }),
@@ -275,7 +277,7 @@ export async function reversePayment(
     tx,
     ctx,
     { type: "CustomerPayment", id },
-    businessToday(),
+    entryDate,
     `${type === "CHEQUE_BOUNCE" ? "Cheque bounced" : "Reversed"}: payment #${payment.number} (${reason})`,
     type,
   );

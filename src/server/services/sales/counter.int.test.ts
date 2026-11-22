@@ -14,10 +14,11 @@ import { createCompany } from "../master/companies";
 import { createCustomer } from "../master/customers";
 import { createProduct } from "../master/products";
 import { createWarehouse } from "../master/warehouses";
+import { createCustomerPayment } from "../payments/customer-payments";
 import { createGoodsReceipt } from "../purchasing/goods-receipts";
 import { dailyReport } from "../reports/daily";
 import { productsSold, soldRange } from "../reports/products-sold";
-import { createCounterSale } from "./counter";
+import { createCounterSale, editCounterSale } from "./counter";
 import { listSalesOrders } from "./orders";
 import { customerPending, openOrdersTotal } from "./positions";
 
@@ -291,5 +292,129 @@ describe("counter sale", () => {
   it("is not allowed without operations access", async () => {
     const platform: ServiceCtx = { ...t.ctx, user: { ...t.ctx.user, role: "SUPER_ADMIN" } };
     await expect(createCounterSale(platform, sale("1"))).rejects.toThrow(ForbiddenError);
+  });
+
+  describe("correcting a saved sale", () => {
+    const ledgerFor = (billId: string) =>
+      t.ctx.db.ledgerEntry.aggregate({
+        where: { referenceType: "Bill", referenceId: billId },
+        _sum: { debit: true, credit: true },
+      });
+
+    it("reverses the old stock and bill, posts the corrected one and keeps the bill number", async () => {
+      // 5 dz = 1120, paid 500 cash.
+      const r = await createCounterSale(t.ctx, sale("5", { paidAmount: "500", method: "CASH" }));
+      const before = await t.ctx.db.bill.findFirstOrThrow({ where: { salesOrderId: r.id } });
+      const paymentBefore = await t.ctx.db.customerPayment.findFirstOrThrow({
+        where: { salesOrderId: r.id },
+      });
+
+      // Should have been 3 dz = 672, same payment.
+      await editCounterSale(t.as("STAFF"), r.id, sale("3", { paidAmount: "500", method: "CASH" }));
+
+      const bill = await t.ctx.db.bill.findFirstOrThrow({ where: { salesOrderId: r.id } });
+      expect(bill.number).toBe(before.number);
+      expect(bill.currentRevision).toBe(2);
+      expect(bill.netAmount.toFixed(2)).toBe("672.00");
+      expect(bill.previousBalance.toFixed(2)).toBe("4000.00");
+      const net = await ledgerFor(bill.id);
+      expect(net._sum.debit!.sub(net._sum.credit!).toFixed(2)).toBe("672.00");
+      expect(await onHand()).toBe(27 * 12);
+      // The payment did not change: kept as it was, not taken again.
+      const payments = await t.ctx.db.customerPayment.findMany({ where: { salesOrderId: r.id } });
+      expect(payments.map((p) => [p.id, p.status])).toEqual([[paymentBefore.id, "POSTED"]]);
+      expect((await customerPending(t.ctx.db, t.customer.id)).total.toFixed(2)).toBe("4172.00");
+      const lines = await t.ctx.db.salesOrderLine.findMany({ where: { salesOrderId: r.id } });
+      expect(lines.map((l) => l.quantity)).toEqual([36]);
+      // Nothing posted was edited: the old entries have mirror entries.
+      expect(
+        await t.ctx.db.stockMovement.count({ where: { referenceId: r.id, type: "REVERSAL" } }),
+      ).toBe(1);
+      expect(await t.ctx.db.auditLog.count({ where: { entityId: r.id, action: "UPDATE" } })).toBe(
+        1,
+      );
+    });
+
+    it("a paid-in-full sale is paid in full again: the payment is reversed and taken anew", async () => {
+      const r = await createCounterSale(t.ctx, sale("2", { paidAmount: "448", method: "CASH" }));
+      await editCounterSale(t.ctx, r.id, sale("4", { paidAmount: "896", method: "CASH" }));
+      const payments = await t.ctx.db.customerPayment.findMany({
+        where: { salesOrderId: r.id },
+        orderBy: { number: "asc" },
+      });
+      expect(payments.map((p) => [p.amount.toFixed(2), p.status])).toEqual([
+        ["448.00", "REVERSED"],
+        ["896.00", "POSTED"],
+      ]);
+      // Old balance 4000 untouched: the sale is paid.
+      expect((await customerPending(t.ctx.db, t.customer.id)).total.toFixed(2)).toBe("4000.00");
+      expect(await onHand()).toBe(26 * 12);
+    });
+
+    it("can take stock that the sale itself had taken, but refuses more than the warehouse has", async () => {
+      const r = await createCounterSale(t.ctx, sale("25", { paidAmount: "5600" }));
+      // 30 dz in all: 25 sold, so 30 is still possible when correcting the same sale.
+      await editCounterSale(t.ctx, r.id, sale("30", { paidAmount: "6720" }));
+      expect(await onHand()).toBe(0);
+      await expect(
+        editCounterSale(t.ctx, r.id, sale("31", { paidAmount: "6944" })),
+      ).rejects.toThrow(/Not enough stock/);
+      expect(await onHand()).toBe(0);
+    });
+
+    it("refuses another customer, an order that is not a counter sale, and a later payment that no longer fits", async () => {
+      const r = await createCounterSale(t.ctx, sale("5"));
+      const other = await createCustomer(t.ctx, { name: "Other", type: "RETAILER" });
+      await expect(
+        editCounterSale(t.ctx, r.id, { ...sale("5"), customerId: other.id }),
+      ).rejects.toThrow(/customer of a sale cannot change/);
+
+      // A later office payment pays the opening balance (4000) and 1000 of this bill.
+      await createCustomerPayment(t.ctx, {
+        customerId: t.customer.id,
+        paymentDate: DAY,
+        method: "CASH",
+        amount: "5000",
+      });
+      await expect(editCounterSale(t.ctx, r.id, sale("1"))).rejects.toThrow(
+        /Reverse those payments first/,
+      );
+      // Within what was paid, the correction is fine.
+      await editCounterSale(t.ctx, r.id, sale("4.5"));
+    });
+
+    it("keeps or changes the special discount on the bill", async () => {
+      // 5 dz = 1120, less a special discount of 120 = 1000.
+      const r = await createCounterSale(t.ctx, sale("5", { specialDiscount: "120" }));
+      let bill = await t.ctx.db.bill.findFirstOrThrow({ where: { salesOrderId: r.id } });
+      expect(bill.netAmount.toFixed(2)).toBe("1000.00");
+      expect((await customerPending(t.ctx.db, t.customer.id)).total.toFixed(2)).toBe("5000.00");
+      const rev = await t.ctx.db.billRevision.findFirstOrThrow({
+        where: { billId: bill.id, revision: 1 },
+      });
+      expect(rev.discountAmount.toFixed(2)).toBe("140.00");
+      expect(rev.companyTotals).toEqual([
+        { companyId: t.crunchy.id, netAmount: "1000.00", quantity: 60, specialDiscount: "120.00" },
+      ]);
+
+      await editCounterSale(t.ctx, r.id, sale("5", { specialDiscount: "20" }));
+      bill = await t.ctx.db.bill.findFirstOrThrow({ where: { salesOrderId: r.id } });
+      expect(bill.netAmount.toFixed(2)).toBe("1100.00");
+      const order = await t.ctx.db.salesOrder.findUniqueOrThrow({ where: { id: r.id } });
+      expect(order.specialDiscount.toFixed(2)).toBe("20.00");
+      expect((await customerPending(t.ctx.db, t.customer.id)).total.toFixed(2)).toBe("5100.00");
+    });
+
+    it("refuses a special discount more than the bill", async () => {
+      await expect(createCounterSale(t.ctx, sale("1", { specialDiscount: "500" }))).rejects.toThrow(
+        /special discount cannot be more than the bill/,
+      );
+    });
+
+    it("needs operations access", async () => {
+      const r = await createCounterSale(t.ctx, sale("1"));
+      const platform: ServiceCtx = { ...t.ctx, user: { ...t.ctx.user, role: "SUPER_ADMIN" } };
+      await expect(editCounterSale(platform, r.id, sale("2"))).rejects.toThrow(ForbiddenError);
+    });
   });
 });

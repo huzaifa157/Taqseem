@@ -1132,6 +1132,8 @@ model SalesOrder {
   reconciledById      String?
   /// Client-generated id of the day-end entry; a retried save does not post twice.
   reconcileRequestId  String?
+  /// Rupees off the whole bill ("special discount"), split over its companies by amount.
+  specialDiscount     Decimal          @default(0) @db.Decimal(14, 2)
   note                String?
   requestId           String?
   createdById         String?

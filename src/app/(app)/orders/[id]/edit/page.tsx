@@ -8,7 +8,7 @@ import { isOpenOrder } from "@/lib/sales";
 import { quantityText } from "@/lib/units";
 import { can } from "@/server/auth/permissions";
 import { requireTenantContext } from "@/server/auth/session";
-import { saveSalesOrderAction } from "@/server/sales-actions";
+import { correctCounterSaleAction, saveSalesOrderAction } from "@/server/sales-actions";
 import { warehouseOptions } from "@/server/services/master/warehouses";
 import { customersForOrders, getSalesOrder } from "@/server/services/sales/orders";
 
@@ -22,17 +22,34 @@ export default async function EditOrderPage({ params }: PageProps<"/orders/[id]/
     customersForOrders(ctx),
     warehouseOptions(ctx),
   ]);
-  if (!isOpenOrder(order.status)) redirect(`/orders/${id}`);
+  // A saved counter sale can still be corrected (and its bill printed again); an order only until
+  // dispatch.
+  const counter = order.fulfilment === "COUNTER" && order.status === "DELIVERED";
+  if (!counter && !isOpenOrder(order.status)) redirect(`/orders/${id}`);
+  const payment = order.payments[0];
   return (
     <>
       <OrderEntry
-        header={{
-          backHref: `/orders/${id}`,
-          backLabel: `Order #${order.number}`,
-          title: `Edit order #${order.number}`,
-          description: "Changes are kept as a new bill revision.",
-        }}
-        action={saveSalesOrderAction.bind(null, id)}
+        header={
+          counter
+            ? {
+                backHref: `/orders/${id}`,
+                backLabel: `Counter sale #${order.number}`,
+                title: `Correct counter sale #${order.number}`,
+                description:
+                  "Fix the items, dozens, discount or payment. The bill keeps its number and gets a new revision; stock and the customer ledger are corrected with reversal entries.",
+              }
+            : {
+                backHref: `/orders/${id}`,
+                backLabel: `Order #${order.number}`,
+                title: `Edit order #${order.number}`,
+                description: "Changes are kept as a new bill revision.",
+              }
+        }
+        mode={counter ? "counter" : "order"}
+        action={
+          counter ? correctCounterSaleAction.bind(null, id) : saveSalesOrderAction.bind(null, id)
+        }
         customers={
           customers.some((c) => c.id === order.customerId)
             ? customers
@@ -59,6 +76,20 @@ export default async function EditOrderPage({ params }: PageProps<"/orders/[id]/
           deliveryDate: toDateInput(order.deliveryDate),
           source: order.source,
           note: order.note ?? undefined,
+          specialDiscount: order.specialDiscount.gt(0) ? order.specialDiscount.toFixed(2) : "",
+          payment:
+            counter && order.payments.length === 1 && payment
+              ? {
+                  amount: payment.amount.toFixed(2),
+                  method: payment.method,
+                  reference: payment.reference ?? "",
+                  chequeNo: payment.cheque?.chequeNo ?? "",
+                  bankName: payment.cheque?.bankName ?? "",
+                  chequeDate: payment.cheque ? toDateInput(payment.cheque.chequeDate) : "",
+                  // Paid the whole bill: "Full" stays on, so the payment follows a corrected total.
+                  full: order.bill ? payment.amount.eq(order.bill.netAmount) : false,
+                }
+              : undefined,
           lines: order.lines.map((l) => ({
             productId: l.productId,
             qty: quantityText(l.quantity),

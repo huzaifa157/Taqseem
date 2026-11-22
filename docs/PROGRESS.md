@@ -2,6 +2,62 @@
 
 Running log of what has been built, decisions taken, and open items. Newest first.
 
+## Special discount on the whole bill — done
+
+- A "Special discount" box (Rs) under the order / counter sale grid, before Total qty. The bill
+  total and "Paid now" follow it as you type; Enter in it goes to "Paid now" on the counter.
+  Saved on the order (`SalesOrder.specialDiscount`, migration `20261122090000`), kept when the
+  order is edited or a counter sale corrected.
+- Customer ledger entries need a company (rule 3), so `splitSpecialDiscount` (`lib/sales.ts`)
+  splits it over the bill's companies in proportion to their amounts, in paisa, with the
+  rounding difference on the largest. `billTotals(lines, special)` takes each share off its
+  company's slice and counts it in the discount (gross − discount = net still holds). Bill
+  revisions store each company's share in `companyTotals[].specialDiscount`.
+- Posted at dispatch / counter sale with the shares; at day-end the same amount stays (never
+  more than what was kept) and the shares move with returns (a few paisa may post as a debit
+  BILL_REVISION); undo puts it back. Never more than the bill (refused).
+- Printed: a "Special discount" row under Discount on the full and compact bills, and each
+  company's share on a split bill. Business analysis takes each company's share off its sales.
+
+## Correct a saved counter sale; Enter goes to the discount — done
+
+- "Correct sale" on a counter sale's page and on its bill opens `/orders/[id]/edit` in counter
+  mode with the lines, date and payment as saved. "Save & print" saves and opens the bill to
+  print again; the bill keeps its number and gets a new revision ("Revision 2" on the bill page).
+- `editCounterSale` (`services/sales/counter.ts`): mirror entries, nothing edited. Its
+  DISPATCH stock movements get REVERSAL movements and its bill ledger entries are reversed, both
+  dated on the original sale day. The corrected sale is then posted: stock out (checked against
+  stock on hand) and SALES_BILL entries per company. The previous balance printed on the bill
+  stays as frozen at the first save.
+- Payment: kept as it is when "Paid now" did not change (amount, method, date, cheque or
+  reference). Otherwise it is reversed (on its own date) and taken again; "Full" stays on for a
+  sale paid in full, so the payment follows the new total. A cleared cheque cannot change. A
+  later payment already allocated to the bill must still fit, or the correction is refused.
+- Credit limit is checked only when more goes on account than before. The customer cannot change.
+- The correction screen shows the balance and stock as they were before the sale
+  (`orderEntryContext` adds back the sale's own ledger and stock).
+- Order and counter grid: Enter in dozens now goes to the discount, and Enter in the discount
+  goes to the next item (as Tab does).
+
+## Colour themes: Taqseem, Black & white, Black — done
+
+- Picker at the bottom of the sidebar (three swatches; `components/layout/theme-picker.tsx`).
+  Kept per computer in localStorage (`taqseem.theme`) and set on `<html data-theme>` by an inline
+  script in the root layout's `<head>` before the first paint, so pages never flash.
+- `globals.css`: `:root` is the default (Taqseem green). `[data-theme=mono]` is ink on paper:
+  black actions and brand, darker greys for secondary text, stronger borders, focus rings in
+  black, greyscale charts. `[data-theme=black]` is a charcoal dark theme with white actions.
+  Red (errors) and amber (warnings) stay in every theme because they carry meaning. In both new
+  themes the current sidebar page is an inverted ink pill and the logo is shown in greyscale.
+- Screen only: the theme blocks and the `dark:` variant sit in `@media screen`, so printing is
+  always black on white. Printable sheets (`.paper` on bills, statements, trip sheets and
+  receivables; `.print-sheet` on reports) reset to the default tokens, and in the Black theme
+  they show as white paper on the dark page.
+- Order grid lines use new `--grid-line` / `--grid-strong` tokens (near-black on light themes,
+  soft white on Black).
+- Checked with screenshots of the dashboard, counter sale (with the suggestion list), a bill and
+  the daily report in all three themes, and print emulation in the Black theme.
+
 ## Order grid: voucher-style lines (0.1.4) — done
 
 - Counter sale / order entry grid: dark row and column lines (85% of the text colour), a black

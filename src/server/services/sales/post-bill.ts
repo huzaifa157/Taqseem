@@ -2,6 +2,7 @@ import "server-only";
 
 import { Prisma } from "@/generated/prisma/client";
 import { loadByProduct, takeFromBatches } from "@/lib/delivery";
+import { splitSpecialDiscount } from "@/lib/sales";
 import { formatDozens } from "@/lib/units";
 
 import type { TenantTx } from "../../db/tenant";
@@ -97,6 +98,8 @@ export async function postOrderBill(
     number: number;
     customerId: string;
     lines: { companyId: string; netAmount: Prisma.Decimal }[];
+    /** Rupees off the whole bill, split over its companies by amount. */
+    specialDiscount: Prisma.Decimal;
     bill: { id: string; number: number } | null;
   },
   date: Date,
@@ -118,6 +121,8 @@ export async function postOrderBill(
   const byCompany = new Map<string, Prisma.Decimal>();
   for (const l of order.lines)
     byCompany.set(l.companyId, (byCompany.get(l.companyId) ?? D(0)).add(l.netAmount));
+  for (const [companyId, share] of splitSpecialDiscount(byCompany, order.specialDiscount))
+    byCompany.set(companyId, byCompany.get(companyId)!.sub(share.toString()));
   for (const [companyId, amount] of byCompany) {
     if (amount.isZero()) continue;
     await tx.ledgerEntry.create({

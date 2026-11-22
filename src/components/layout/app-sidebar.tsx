@@ -12,6 +12,7 @@ import { LogoutButton } from "./logout-button";
 import { navItems } from "./nav-items";
 import { NavList, SidebarNav } from "./sidebar-nav";
 import { SIDEBAR_INIT_SCRIPT, SidebarToggle } from "./sidebar-toggle";
+import { ThemePicker } from "./theme-picker";
 
 /** Items everyone sees; shown instantly while the role-specific list streams in. */
 const PUBLIC_HREFS = navItems.filter((item) => !item.permission).map((item) => item.href);
@@ -80,6 +81,7 @@ async function UserPanel() {
           {user.tenantName ? ` · ${user.tenantName}` : ""}
         </p>
       </div>
+      <ThemePicker />
       <Link
         href="/account/password"
         title="Change password"

@@ -55,6 +55,18 @@ export default async function BillPage({ params, searchParams }: PageProps<"/ord
           Split by company ({view.sections.length})
         </Link>
         {view.bill.status === "REVERSED" ? <Badge variant="outline">Cancelled</Badge> : null}
+        {view.order.fulfilment === "COUNTER" && view.order.status === "DELIVERED" ? (
+          <Link
+            href={`/orders/${id}/edit`}
+            className="hover:bg-accent rounded-md border px-3 py-1.5 text-sm"
+            title="A mistake on this sale? Correct it, then print the bill again."
+          >
+            Correct sale
+          </Link>
+        ) : null}
+        {view.bill.revision > 1 ? (
+          <span className="text-muted-foreground text-sm">Revision {view.bill.revision}</span>
+        ) : null}
         {!view.bill.posted && view.bill.status !== "REVERSED" ? (
           <span className="text-muted-foreground text-sm">
             Draft until dispatch: amounts can still change.

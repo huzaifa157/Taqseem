@@ -54,7 +54,7 @@ async function Receivables({ params, searchParams }: PageProps<"/companies/[id]/
         </Button>
       </PrintToolbar>
       <StatementRangeForm range={range} />
-      <article className="mx-auto max-w-[210mm] space-y-[0.8em] bg-white leading-snug text-black">
+      <article className="paper mx-auto max-w-[210mm] space-y-[0.8em] bg-white leading-snug text-black">
         <Letterhead
           business={profile.business}
           right={
