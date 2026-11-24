@@ -20,6 +20,8 @@ import {
   reverseCustomerPayment,
 } from "./services/payments/customer-payments";
 import { createOldBill, removeOldBill } from "./services/payments/old-bills";
+import { customerSchema } from "@/lib/validation/master";
+import { createCustomerTx } from "./services/master/customers";
 import { customerPending } from "./services/sales/positions";
 
 // Server actions for customer payments at the office. The services check permissions, allocate,
@@ -143,6 +145,34 @@ export async function addToBalanceAction(
   const result = await runAction<undefined>(async () => {
     const ctx = await requireTenantContext("payments.manage");
     const customerId = String(formData.get("customerId") ?? "");
+    // A customer not in the list yet: created here, with the amount as their opening balance.
+    const newName = String(formData.get("newCustomerName") ?? "").trim();
+    if (!customerId && newName) {
+      const amount = String(formData.get("amount") ?? "").trim();
+      if (!amount || !(Number(amount.replace(/,/g, "")) > 0))
+        throw new ServiceError("Enter the amount the customer owes.");
+      const phone = String(formData.get("newCustomerPhone") ?? "");
+      const requestId = formData.get("requestId");
+      const created = await ctx.db.$transaction((tx) =>
+        createCustomerTx(
+          tx,
+          ctx,
+          customerSchema.parse({
+            name: newName,
+            phone,
+            whatsapp: phone,
+            type: "RETAILER",
+            areaId: formData.get("newCustomerAreaId") ?? "",
+            openingBalance: amount,
+          }),
+          typeof requestId === "string" && requestId ? requestId : undefined,
+        ),
+      );
+      const pending = await customerPending(ctx.db, created.id);
+      return {
+        message: `${created.name} added as a new customer, owing Rs ${formatMoney(pending.total)}.`,
+      };
+    }
     if (!customerId) throw new ServiceError("Choose the customer.");
     const bill = await createOldBill(ctx, {
       requestId: formData.get("requestId"),

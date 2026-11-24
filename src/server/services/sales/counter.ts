@@ -23,6 +23,7 @@ import {
   totalsWithSpecial,
   writeBillRevision,
 } from "./orders";
+import { postDamageReturn, priceDamage } from "../damage";
 import { customerPending, openOrdersTotal } from "./positions";
 import { assertStockOnHand, postOrderBill, stockOut } from "./post-bill";
 
@@ -42,6 +43,10 @@ export async function createCounterSale(ctx: ServiceCtx, input: unknown) {
   assertCan(ctx.user.role, "operations.manage");
   const data = counterSaleSchema.parse(input);
   const paid = data.paidAmount ? D(data.paidAmount) : D(0);
+  if (data.damaged.length > 0 && !data.customerId)
+    throw new ServiceError(
+      "Damage can be deducted only for a customer already in the list. Save the customer first.",
+    );
   return ctx.db.$transaction(
     async (tx) => {
       if (data.requestId) {
@@ -51,6 +56,10 @@ export async function createCounterSale(ctx: ServiceCtx, input: unknown) {
         });
         if (existing) return { ...existing, repeated: true };
       }
+      // Damage deducted from this bill: like money paid now, it does not use up credit.
+      const damage = data.damaged.length
+        ? await priceDamage(tx, data.customerId!, { damaged: data.damaged, replacements: [] })
+        : null;
       const { order, bill, customer, warehouseId, lines, total, names } = await bookOrder(
         tx,
         ctx,
@@ -69,7 +78,7 @@ export async function createCounterSale(ctx: ServiceCtx, input: unknown) {
           lines: data.lines,
           specialDiscount: data.specialDiscount,
         },
-        { fulfilment: "COUNTER", paidNow: paid },
+        { fulfilment: "COUNTER", paidNow: paid.add(damage?.damagedAmount ?? 0) },
       );
 
       const saleLines = lines.map((l) => ({
@@ -100,6 +109,19 @@ export async function createCounterSale(ctx: ServiceCtx, input: unknown) {
         data: { status: "DELIVERED", reconciledAt: new Date(), reconciledById: ctx.user.id },
       });
 
+      // The damage the customer brought back comes off this bill: a damage entry linked to the
+      // sale (damaged stock, the credit, the company claim), printed on the bill.
+      const damageEntry = damage
+        ? await postDamageReturn(tx, ctx, {
+            customer,
+            returnDate: data.saleDate,
+            note: `Deducted from counter sale #${order.number}`,
+            salesOrderId: order.id,
+            damaged: data.damaged,
+            replacements: [],
+          })
+        : null;
+
       const payment = paid.gt(0)
         ? await postCounterPayment(tx, ctx, data, paid, customer.id, order)
         : null;
@@ -114,6 +136,9 @@ export async function createCounterSale(ctx: ServiceCtx, input: unknown) {
           fulfilment: "COUNTER",
           bill: total.netAmount,
           paid: payment ? { number: payment.number, amount: paid, method: data.method } : null,
+          damage: damageEntry
+            ? { number: damageEntry.number, amount: damageEntry.damagedAmount }
+            : null,
         },
         requestId: data.requestId,
       });

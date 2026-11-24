@@ -225,6 +225,10 @@ export const productSchema = z
     /** Quantity slabs: from N dozen, this discount replaces the base one (same unit as the base). */
     slabs: z.array(discountSlabSchema).max(10, "Use at most 10 slabs").default([]),
     minStockLevel: blankAs(dozensSchema("minimum stock", { step: "packet" }), 0),
+    /** Sold only in whole dozens (no half dozen on orders and counter sales). */
+    wholeDozensOnly: z
+      .preprocess((v) => v === true || v === "true" || v === "on", z.boolean())
+      .default(false),
     /** When new rates take effect (price history). */
     effectiveFrom: dateSchema("effective date"),
   })

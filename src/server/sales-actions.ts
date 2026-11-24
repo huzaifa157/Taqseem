@@ -49,10 +49,22 @@ function orderInput(formData: FormData) {
       !key.startsWith("$ACTION") &&
       key !== "productId" &&
       key !== "quantity" &&
-      key !== "discount"
+      key !== "discount" &&
+      !key.startsWith("damage")
     )
       fields[key] = value;
   }
+  // "− Damage" on a counter sale: damaged goods deducted from the bill.
+  const damageIds = formData.getAll("damageProductId").map(String);
+  const damageQty = formData.getAll("damageQuantity").map(String);
+  const damageRate = formData.getAll("damageRate").map(String);
+  const damaged = damageIds
+    .map((productId, i) => ({
+      productId,
+      quantity: (damageQty[i] ?? "").trim(),
+      rate: damageRate[i] ?? "",
+    }))
+    .filter((l) => l.quantity !== "");
   const ids = formData.getAll("productId").map(String);
   const quantities = formData.getAll("quantity").map(String);
   // One discount per line (blank = the product's discount and slabs).
@@ -62,7 +74,7 @@ function orderInput(formData: FormData) {
     quantity: quantities[i] ?? "",
     discount: discounts[i] ?? "",
   }));
-  return { ...fields, lines };
+  return { ...fields, lines, damaged };
 }
 
 /** Books (id = null) or edits an order, then opens it (or a blank order for "Save and next"). */
@@ -88,7 +100,9 @@ export async function saveSalesOrderAction(
     formData.get("intent") === "next"
       ? // The next order keeps this one's delivery date.
         `/orders/new?notice=booked&last=${savedId}&date=${deliveryDate}`
-      : `/orders/${savedId}?notice=${id ? "saved" : "booked"}`,
+      : formData.get("intent") === "print"
+        ? `/orders/${savedId}/bill?print=1`
+        : `/orders/${savedId}?notice=${id ? "saved" : "booked"}`,
   );
 }
 

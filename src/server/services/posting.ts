@@ -20,7 +20,8 @@ export type DocumentKey =
   | "BILL"
   | "CUSTOMER_PAYMENT"
   | "DELIVERY_TRIP"
-  | "EXPENSE";
+  | "EXPENSE"
+  | "DAMAGE_RETURN";
 
 /**
  * Next number for a document type, e.g. PO #13. The row update locks the counter until the

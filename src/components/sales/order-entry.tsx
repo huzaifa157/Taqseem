@@ -30,7 +30,13 @@ import {
   readCustomerDiscount,
   readSpecialDiscount,
 } from "@/lib/sales";
-import { formatDozens, PACKETS_PER_HALF_DOZEN, parseQuantity, quantityText } from "@/lib/units";
+import {
+  formatDozens,
+  PACKETS_PER_DOZEN,
+  PACKETS_PER_HALF_DOZEN,
+  parseQuantity,
+  quantityText,
+} from "@/lib/units";
 import { orderEntryContextAction } from "@/server/sales-actions";
 import type { OrderEntryContext } from "@/server/services/sales/orders";
 
@@ -192,6 +198,13 @@ export function OrderEntry({
   const [lines, setLines] = useState<Line[]>(initial.lines ?? []);
   // Special discount: rupees off the whole bill, typed under the grid.
   const [special, setSpecial] = useState(initial.specialDiscount ?? "");
+  // "− Damage" (counter sale): damaged goods the customer brought back, deducted from this bill.
+  // `rate` is set only when typed; otherwise it is what the customer pays.
+  const [damageOpen, setDamageOpen] = useState(false);
+  const [damageLines, setDamageLines] = useState<
+    { productId: string; qty: string; rate: string | null }[]
+  >([]);
+  const damageSearch = useRef<HTMLInputElement>(null);
   const [allowOver, setAllowOver] = useState(false);
   // A customer not in the list yet: created with the order from name and phone.
   const [newCustomer, setNewCustomer] = useState<{
@@ -212,7 +225,7 @@ export function OrderEntry({
   const productSearch = useRef<HTMLInputElement>(null);
   const customerSearch = useRef<HTMLInputElement>(null);
   const [noteOpen, setNoteOpen] = useState(Boolean(initial.note));
-  // "Change" (F2): the customer search comes back; the customer stays until another is picked.
+  // "Change" (F4): the customer search comes back; the customer stays until another is picked.
   const [changingCustomer, setChangingCustomer] = useState(false);
   useEffect(() => {
     if (changingCustomer) customerSearch.current?.focus();
@@ -220,7 +233,7 @@ export function OrderEntry({
   useEffect(() => {
     if (!isNew) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "F2") return;
+      if (e.key !== "F4") return;
       e.preventDefault();
       setChangingCustomer(true);
       customerSearch.current?.focus();
@@ -228,6 +241,21 @@ export function OrderEntry({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [isNew]);
+  // F2 saves and prints the bill, F3 saves and starts the next one, from anywhere on the screen
+  // (they press the buttons, so a disabled button does nothing).
+  const formRef = useRef<HTMLFormElement>(null);
+  const printButton = useRef<HTMLButtonElement>(null);
+  const nextButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "F2" && e.key !== "F3") return;
+      e.preventDefault();
+      const button = e.key === "F2" ? printButton.current : nextButton.current;
+      if (button && !button.disabled) formRef.current?.requestSubmit(button);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   const gridScrollRef = useRef<HTMLDivElement>(null);
   const sectionRef = useRef<HTMLElement>(null);
   const footerRef = useRef<HTMLDivElement>(null);
@@ -299,13 +327,23 @@ export function OrderEntry({
   const { total } = billTotals(priced, specialRead.discount);
   const lineDiscounts = total.discountAmount.sub(total.specialDiscount);
   const specialError = specialRead.error ?? fieldError(state, "specialDiscount");
-  const paidNow = paidFull
-    ? Number(total.netAmount.toString())
-    : /^\d+(\.\d{1,2})?$/.test(paid.trim())
-      ? Number(paid)
-      : 0;
+  // Damage deducted from this bill, valued at what the customer pays (or the typed rate).
+  const damageRate = (l: { productId: string; qty: string; rate: string | null }) => {
+    if (l.rate !== null) return l.rate;
+    const product = productById.get(l.productId);
+    const packets = parseQuantity(l.qty) ?? 0;
+    if (!product || packets <= 0) return "";
+    const p = priceLineFor(product, packets, product.customerDiscount);
+    return ((Number(p.netAmount.toString()) * PACKETS_PER_DOZEN) / packets).toFixed(2);
+  };
+  const damageValue = (l: { productId: string; qty: string; rate: string | null }) =>
+    ((parseQuantity(l.qty) ?? 0) / PACKETS_PER_DOZEN) * (Number(damageRate(l)) || 0);
+  const damageTotal = counter ? damageLines.reduce((s, l) => s + damageValue(l), 0) : 0;
+  // What is left to pay for this bill after the damage.
+  const due = Math.max(Number(total.netAmount.toString()) - damageTotal, 0);
+  const paidNow = paidFull ? due : /^\d+(\.\d{1,2})?$/.test(paid.trim()) ? Number(paid) : 0;
   // What a counter sale leaves on the customer's account.
-  const onAccount = Math.max(Number(total.netAmount.toString()) - paidNow, 0);
+  const onAccount = Math.max(due - paidNow, 0);
   const credit = context
     ? checkCredit({
         creditLimit: context.customer.creditLimit,
@@ -332,10 +370,15 @@ export function OrderEntry({
     }
     pendingFocus.current = p.id;
     // The customer's own discount on this product is used again (it can still be changed).
-    // Starts at half a dozen, selected: Enter keeps it, typing a number replaces it.
+    // Starts at half a dozen (a whole one for products sold in whole dozens), selected: Enter
+    // keeps it, typing a number replaces it.
     setLines((ls) => [
       ...ls,
-      { productId: p.id, qty: DEFAULT_QTY, discount: p.customerDiscount ?? "" },
+      {
+        productId: p.id,
+        qty: p.wholeDozensOnly ? "1" : DEFAULT_QTY,
+        discount: p.customerDiscount ?? "",
+      },
     ]);
   };
 
@@ -403,6 +446,7 @@ export function OrderEntry({
 
   return (
     <form
+      ref={formRef}
       action={(fd) => formAction(isNew ? withRequestId(fd) : fd)}
       onKeyDown={(e) => {
         const target = e.target as HTMLElement;
@@ -424,7 +468,15 @@ export function OrderEntry({
           // product box (like Tab); in the header to the next box (the customer box handles its
           // own Enter).
           e.preventDefault();
-          if (target.name === "specialDiscount") {
+          if (target.id.startsWith("dmg-qty-")) {
+            (
+              document.getElementById(
+                target.id.replace("dmg-qty-", "dmg-rate-"),
+              ) as HTMLInputElement | null
+            )?.select();
+          } else if (target.id.startsWith("dmg-rate-")) {
+            damageSearch.current?.focus();
+          } else if (target.name === "specialDiscount") {
             // Then what was paid (counter), which usually follows the discount.
             const paidBox = document.getElementById("counter-paidAmount");
             if (paidBox instanceof HTMLInputElement && !paidBox.readOnly) paidBox.select();
@@ -768,7 +820,9 @@ export function OrderEntry({
                     fieldError(state, `lines.${i}.quantity`) ??
                     (line.qty && qty === null
                       ? "Whole or half dozens: 2, 2.5 or 2dz 6pk"
-                      : undefined);
+                      : product.wholeDozensOnly && qty !== null && qty % PACKETS_PER_DOZEN !== 0
+                        ? "Whole dozens only: 1, 2, 3 …"
+                        : undefined);
                   return (
                     <tr key={line.productId} className="hover:bg-muted/30 group">
                       <GridTd className="text-muted-foreground tabular-nums">{i + 1}</GridTd>
@@ -990,6 +1044,30 @@ export function OrderEntry({
                   {specialError}
                 </span>
               ) : null}
+              {counter ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-9"
+                  disabled={!hasProducts || isNewCustomer}
+                  aria-expanded={damageOpen}
+                  title={
+                    isNewCustomer
+                      ? "Save the customer first to deduct damage"
+                      : "Damaged goods the customer brought back, deducted from this bill"
+                  }
+                  onClick={() => {
+                    setDamageOpen((o) => !o);
+                    setTimeout(() => damageSearch.current?.focus(), 0);
+                  }}
+                >
+                  − Damage
+                  {damageTotal > 0 ? (
+                    <span className="tabular-nums"> {formatMoney(damageTotal.toFixed(2))}</span>
+                  ) : null}
+                </Button>
+              ) : null}
             </div>
             <p className="flex items-baseline gap-3">
               {/* Total quantity next to the bill total, as large, so both are read together. */}
@@ -1005,6 +1083,137 @@ export function OrderEntry({
             </p>
           </div>
         </div>
+        {counter && (damageOpen || damageLines.length > 0) ? (
+          <section
+            aria-labelledby="damage-heading"
+            className="bg-card overflow-hidden rounded-xl border"
+          >
+            <header className="flex items-baseline justify-between gap-3 border-b px-4 py-2">
+              <h2 id="damage-heading" className="font-semibold">
+                Damage returned{" "}
+                <span className="text-muted-foreground text-sm font-normal">
+                  deducted from this bill
+                </span>
+              </h2>
+              <span className="text-muted-foreground text-xs">
+                Goes into damaged stock; the company is claimed
+              </span>
+            </header>
+            <table className="w-full text-sm">
+              <tbody>
+                {damageLines.map((l) => {
+                  const product = productById.get(l.productId);
+                  if (!product) return null;
+                  return (
+                    <tr key={l.productId} className="border-b">
+                      <td className="px-3 py-1">
+                        {product.name}{" "}
+                        <span className="text-muted-foreground font-mono text-xs">
+                          {product.code}
+                        </span>
+                        <input type="hidden" name="damageProductId" value={l.productId} />
+                      </td>
+                      <td className="w-28 px-3 py-1">
+                        <Input
+                          id={`dmg-qty-${l.productId}`}
+                          name="damageQuantity"
+                          inputMode="decimal"
+                          autoComplete="off"
+                          placeholder="dz or 6pk"
+                          aria-label={`Damaged ${product.name}`}
+                          value={l.qty}
+                          onChange={(e) =>
+                            setDamageLines((ls) =>
+                              ls.map((x) =>
+                                x.productId === l.productId ? { ...x, qty: e.target.value } : x,
+                              ),
+                            )
+                          }
+                          className="h-8 text-right tabular-nums"
+                        />
+                      </td>
+                      <td className="w-32 px-3 py-1">
+                        <Input
+                          id={`dmg-rate-${l.productId}`}
+                          name="damageRate"
+                          inputMode="decimal"
+                          autoComplete="off"
+                          aria-label={`Rate of damaged ${product.name}`}
+                          title="What the customer pays per dozen; change it if agreed otherwise"
+                          value={damageRate(l)}
+                          onChange={(e) =>
+                            setDamageLines((ls) =>
+                              ls.map((x) =>
+                                x.productId === l.productId ? { ...x, rate: e.target.value } : x,
+                              ),
+                            )
+                          }
+                          className="h-8 text-right tabular-nums"
+                        />
+                      </td>
+                      <td className="w-32 px-3 py-1 text-right font-semibold tabular-nums">
+                        {damageValue(l) ? `−${formatMoney(damageValue(l).toFixed(2))}` : ""}
+                      </td>
+                      <td className="w-8 px-2 py-1 text-center">
+                        <button
+                          type="button"
+                          className="text-destructive hover:bg-destructive/10 rounded px-1.5 font-semibold"
+                          aria-label={`Remove damaged ${product.name}`}
+                          onClick={() =>
+                            setDamageLines((ls) => ls.filter((x) => x.productId !== l.productId))
+                          }
+                        >
+                          ×
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+                <tr className="bg-destructive/5">
+                  <td className="px-3 py-1.5" colSpan={5}>
+                    <Combobox
+                      label="Damaged item"
+                      hideLabel
+                      floating
+                      tabPicks
+                      inputRef={damageSearch}
+                      inputClassName="h-8 bg-background"
+                      items={products}
+                      getKey={(p) => p.id}
+                      rank={(p, q) => rankText(q, p.code, p.name, p.companyName)}
+                      render={(p) => (
+                        <span>
+                          {p.name} <span className="font-mono text-xs">{p.code}</span>
+                          <span className="text-muted-foreground"> · {p.companyName}</span>
+                        </span>
+                      )}
+                      onSelect={(p) => {
+                        setDamageLines((ls) =>
+                          ls.some((x) => x.productId === p.id)
+                            ? ls
+                            : [...ls, { productId: p.id, qty: "", rate: null }],
+                        );
+                        setTimeout(
+                          () =>
+                            (
+                              document.getElementById(`dmg-qty-${p.id}`) as HTMLInputElement | null
+                            )?.focus(),
+                          0,
+                        );
+                      }}
+                      placeholder="Damaged item code or name, then Enter"
+                    />
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <p className="bg-muted/40 border-t px-4 py-1.5 text-right text-sm">
+              Bill {formatMoney(total.netAmount)} − damage{" "}
+              <strong className="tabular-nums">{formatMoney(damageTotal.toFixed(2))}</strong> ={" "}
+              <strong className="tabular-nums">{formatMoney(due.toFixed(2))}</strong> to pay
+            </p>
+          </section>
+        ) : null}
       </section>
 
       {/* Pinned to the bottom of the window: payment, warnings and the save buttons. */}
@@ -1052,7 +1261,7 @@ export function OrderEntry({
               setPaidFull={setPaidFull}
               method={method}
               setMethod={setMethod}
-              total={total.netAmount.toString()}
+              total={due.toFixed(2)}
               onAccount={onAccount}
               defaults={initial.payment}
             />
@@ -1063,32 +1272,36 @@ export function OrderEntry({
             </Button>
             {isNew ? (
               <Button
+                ref={nextButton}
                 type="submit"
                 name="intent"
                 value="next"
                 variant="outline"
                 className="h-10"
                 disabled={cannotSave}
+                aria-keyshortcuts="F3"
                 title={
-                  counter ? "Save, then enter the next sale" : "Book, then enter the next order"
+                  counter
+                    ? "Save, then enter the next sale (F3)"
+                    : "Book, then enter the next order (F3)"
                 }
               >
-                {counter ? "Save & next" : "Book & next"}
+                {counter ? "Save & next" : "Book & next"} <Kbd>F3</Kbd>
               </Button>
             ) : null}
-            {counter ? (
-              <Button
-                type="submit"
-                name="intent"
-                value="print"
-                variant="outline"
-                className="h-10"
-                disabled={cannotSave}
-                title="Save and print the bill"
-              >
-                Save &amp; print
-              </Button>
-            ) : null}
+            <Button
+              ref={printButton}
+              type="submit"
+              name="intent"
+              value="print"
+              variant="outline"
+              className="h-10"
+              disabled={cannotSave}
+              aria-keyshortcuts="F2"
+              title="Save and print the bill (F2)"
+            >
+              {counter || !isNew ? "Save & print" : "Book & print"} <Kbd>F2</Kbd>
+            </Button>
             <Button
               type="submit"
               disabled={cannotSave}
@@ -1221,7 +1434,9 @@ function ShortcutHelp({ counter }: { counter: boolean }) {
     ["Alt+R", "customer's discount on the line"],
     ["Ctrl+Delete", "remove the line"],
     ["Alt+L", "repeat last order"],
-    ["F2", "change the customer"],
+    ["F2", counter ? "save and print the bill" : "book and print the bill"],
+    ["F3", counter ? "save, then the next sale" : "book, then the next order"],
+    ["F4", "change the customer"],
     ["Ctrl+Enter", counter ? "save the sale" : "book the order"],
     ["Esc", "leave the box"],
   ];
@@ -1366,7 +1581,7 @@ function initials(name: string) {
   ).toUpperCase();
 }
 
-/** The chosen customer: badge, name, shop and area, and "Change (F2)" on a new order. */
+/** The chosen customer: badge, name, shop and area, and "Change (F4)" on a new order. */
 function CustomerIdentity({
   name,
   details,
@@ -1400,9 +1615,9 @@ function CustomerIdentity({
           size="sm"
           className="ml-2"
           onClick={onChange}
-          aria-keyshortcuts="F2"
+          aria-keyshortcuts="F4"
         >
-          Change <Kbd>F2</Kbd>
+          Change <Kbd>F4</Kbd>
         </Button>
       ) : null}
     </div>

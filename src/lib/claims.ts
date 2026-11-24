@@ -12,6 +12,7 @@ export const CLAIM_TYPE_LABEL: Record<ClaimType, string> = {
   SACK_RETURN: "Sacks returned",
   BOOKER_SALARY: "Booker salary (paid for company)",
   COMPANY_EXPENSE: "Expense (paid for company)",
+  CUSTOMER_DAMAGE: "Customer damage",
 };
 
 type Claim = { type: ClaimType; quantity: number; product: { name: string } | null };

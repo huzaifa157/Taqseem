@@ -42,6 +42,10 @@ async function Report({ searchParams }: PageProps<"/reports/daily">) {
   const date = parseDateRange({ from: sp.date }).from ?? businessToday();
   const [r, profile] = await Promise.all([dailyReport(ctx, date), getPrintProfile(ctx)]);
   const day = (offset: number) => toDateInput(new Date(date.getTime() + offset * DAY_MS));
+  // "Counter sales only": the counter sales of the day and their profit, nothing else.
+  const counterOnly = sp.view === "counter";
+  const view = (counter: boolean) =>
+    `/reports/daily?date=${day(0)}${counter ? "&view=counter" : ""}`;
 
   return (
     <div className="print-root">
@@ -83,6 +87,23 @@ async function Report({ searchParams }: PageProps<"/reports/daily">) {
         <Button asChild variant="ghost" size="sm">
           <Link href="/reports/daily">Today</Link>
         </Button>
+        {counterOnly ? <input type="hidden" name="view" value="counter" /> : null}
+        <span className="bg-muted ml-2 inline-flex rounded-md p-1" role="group" aria-label="Show">
+          <Link
+            href={view(false)}
+            aria-current={!counterOnly ? "page" : undefined}
+            className={`rounded px-2.5 py-1 text-sm ${!counterOnly ? "bg-background font-medium shadow-xs" : ""}`}
+          >
+            Whole day
+          </Link>
+          <Link
+            href={view(true)}
+            aria-current={counterOnly ? "page" : undefined}
+            className={`rounded px-2.5 py-1 text-sm ${counterOnly ? "bg-background font-medium shadow-xs" : ""}`}
+          >
+            Counter sales only
+          </Link>
+        </span>
       </form>
 
       <article className="print-sheet space-y-[1.2em] text-sm leading-snug">
@@ -90,20 +111,27 @@ async function Report({ searchParams }: PageProps<"/reports/daily">) {
           business={profile.business}
           right={
             <>
-              <p className="font-bold">DAILY REPORT</p>
+              <p className="font-bold">{counterOnly ? "COUNTER SALES" : "DAILY REPORT"}</p>
               <p>{formatDate(date)}</p>
             </>
           }
         />
-        <NeedsAttention issues={r.issues} />
-        <KeyNumbers r={r} />
-        <Deliveries r={r} />
-        <SpecialRates r={r} />
-        <DiscountChanges r={r} />
-        <ProductsSold r={r} />
-        {r.money ? <Money money={r.money} profit={r.profit} /> : null}
-        {r.money ? <Pending pending={r.money.pending} /> : null}
-        <Stock r={r} />
+        {counterOnly ? (
+          <CounterSales r={r} />
+        ) : (
+          <>
+            <NeedsAttention issues={r.issues} />
+            <KeyNumbers r={r} />
+            <Deliveries r={r} />
+            <CounterSales r={r} />
+            <SpecialRates r={r} />
+            <DiscountChanges r={r} />
+            <ProductsSold r={r} />
+            {r.money ? <Money money={r.money} profit={r.profit} /> : null}
+            {r.money ? <Pending pending={r.money.pending} /> : null}
+            <Stock r={r} />
+          </>
+        )}
       </article>
     </div>
   );
@@ -258,7 +286,8 @@ function Deliveries({ r }: { r: DailyReport }) {
       {r.counter.sales ? (
         <p>
           Counter sales (collected at the warehouse): {r.counter.sales}, billed{" "}
-          <strong className="tabular-nums">{formatMoney(r.counter.billed)}</strong>.
+          <strong className="tabular-nums">{formatMoney(r.counter.billed)}</strong>; each one under
+          Counter sales below.
         </p>
       ) : null}
       {d.list.length > 0 ? (
@@ -289,6 +318,93 @@ function Deliveries({ r }: { r: DailyReport }) {
           </tbody>
         </table>
       ) : null}
+    </Section>
+  );
+}
+
+/**
+ * Counter sales of the day, each with what was paid at the counter and (owner / accountant) its
+ * cost and profit at today's purchase rates, with the totals.
+ */
+function CounterSales({ r }: { r: DailyReport }) {
+  const c = r.counter;
+  const cost = r.showCost;
+  return (
+    <Section title="Counter sales" id="counter-sales">
+      {c.sales === 0 ? (
+        <p>No counter sales on this day.</p>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-[0.5em] sm:grid-cols-4 print:grid-cols-4">
+            <Figure label="Counter sales" value={c.sales} note={formatDozens(c.quantity)} />
+            <Figure label="Billed" value={formatMoney(c.billed)} />
+            <Figure
+              label="Paid at the counter"
+              value={formatMoney(c.paid)}
+              note={`${formatMoney(c.onAccount)} on account`}
+            />
+            {cost && c.profit ? (
+              <Figure
+                label="Profit"
+                value={formatMoney(c.profit)}
+                note={`cost of goods ${formatMoney(c.cost)}`}
+              />
+            ) : null}
+          </div>
+          <table className="w-full border-collapse">
+            <thead>
+              <tr>
+                <th className={th}>Sale</th>
+                <th className={th}>Customer</th>
+                <th className={`${th} ${num}`}>Dozens</th>
+                <th className={`${th} ${num}`}>Bill</th>
+                <th className={`${th} ${num}`}>Paid</th>
+                <th className={`${th} ${num}`}>On account</th>
+                {cost ? <th className={`${th} ${num}`}>Cost</th> : null}
+                {cost ? <th className={`${th} ${num}`}>Profit</th> : null}
+              </tr>
+            </thead>
+            <tbody>
+              {c.list.map((o) => (
+                <tr key={o.id}>
+                  <td className={td}>
+                    <Link href={`/orders/${o.id}`} className="print:no-underline">
+                      #{o.number}
+                    </Link>
+                  </td>
+                  <td className={td}>{o.customerName}</td>
+                  <td className={`${td} ${num}`}>{formatDozens(o.quantity)}</td>
+                  <td className={`${td} ${num}`}>{formatMoney(o.sales)}</td>
+                  <td className={`${td} ${num}`}>{o.paid.isZero() ? "" : formatMoney(o.paid)}</td>
+                  <td className={`${td} ${num}`}>
+                    {o.onAccount.isZero() ? "" : formatMoney(o.onAccount)}
+                  </td>
+                  {cost ? <td className={`${td} ${num}`}>{formatMoney(o.cost)}</td> : null}
+                  {cost ? (
+                    <td className={`${td} ${num} ${o.profit?.isNeg() ? "font-bold" : ""}`}>
+                      {formatMoney(o.profit)}
+                    </td>
+                  ) : null}
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr className="font-bold">
+                <td className={td} colSpan={2}>
+                  Total
+                </td>
+                <td className={`${td} ${num}`}>{formatDozens(c.quantity)}</td>
+                <td className={`${td} ${num}`}>{formatMoney(c.billed)}</td>
+                <td className={`${td} ${num}`}>{formatMoney(c.paid)}</td>
+                <td className={`${td} ${num}`}>{formatMoney(c.onAccount)}</td>
+                {cost ? <td className={`${td} ${num}`}>{formatMoney(c.cost)}</td> : null}
+                {cost ? <td className={`${td} ${num}`}>{formatMoney(c.profit)}</td> : null}
+              </tr>
+            </tfoot>
+          </table>
+          {cost ? <p className="text-[0.85em]">Cost at today&apos;s purchase rates.</p> : null}
+        </>
+      )}
     </Section>
   );
 }
@@ -560,20 +676,50 @@ function Money({
           {profit ? (
             <>
               <p className="font-semibold">Profit</p>
-              <dl className="grid grid-cols-[1fr_auto] gap-x-3">
-                <dt>Sales</dt>
-                <dd className={num}>{formatMoney(profit.sales)}</dd>
-                <dt>− Cost of goods sold</dt>
-                <dd className={num}>{formatMoney(profit.cost)}</dd>
-                <dt className="font-semibold">Gross profit</dt>
-                <dd className={`font-semibold ${num}`}>{formatMoney(profit.gross)}</dd>
-                <dt>− Expenses</dt>
-                <dd className={num}>{formatMoney(profit.expenses)}</dd>
-                <dt className="border-t border-black font-bold">Net profit</dt>
-                <dd className={`border-t border-black font-bold ${num}`}>
-                  {formatMoney(profit.net)}
-                </dd>
-              </dl>
+              <table className="w-full border-collapse">
+                <thead>
+                  <tr>
+                    <th className={th} />
+                    <th className={`${th} ${num}`}>Deliveries</th>
+                    <th className={`${th} ${num}`}>Counter</th>
+                    <th className={`${th} ${num}`}>Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td className={td}>Sales</td>
+                    <td className={`${td} ${num}`}>{formatMoney(profit.delivery.sales)}</td>
+                    <td className={`${td} ${num}`}>{formatMoney(profit.counter.sales)}</td>
+                    <td className={`${td} ${num}`}>{formatMoney(profit.sales)}</td>
+                  </tr>
+                  <tr>
+                    <td className={td}>− Cost of goods sold</td>
+                    <td className={`${td} ${num}`}>{formatMoney(profit.delivery.cost)}</td>
+                    <td className={`${td} ${num}`}>{formatMoney(profit.counter.cost)}</td>
+                    <td className={`${td} ${num}`}>{formatMoney(profit.cost)}</td>
+                  </tr>
+                  <tr className="font-semibold">
+                    <td className={td}>Gross profit</td>
+                    <td className={`${td} ${num}`}>{formatMoney(profit.delivery.gross)}</td>
+                    <td className={`${td} ${num}`}>{formatMoney(profit.counter.gross)}</td>
+                    <td className={`${td} ${num}`}>{formatMoney(profit.gross)}</td>
+                  </tr>
+                  <tr>
+                    <td className={td}>− Expenses</td>
+                    <td className={td} />
+                    <td className={td} />
+                    <td className={`${td} ${num}`}>{formatMoney(profit.expenses)}</td>
+                  </tr>
+                  <tr className="font-bold">
+                    <td className={`${td} border-t border-black`}>Net profit</td>
+                    <td className={`${td} border-t border-black`} />
+                    <td className={`${td} border-t border-black`} />
+                    <td className={`${td} ${num} border-t border-black`}>
+                      {formatMoney(profit.net)}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
             </>
           ) : null}
         </div>

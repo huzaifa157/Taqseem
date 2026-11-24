@@ -77,6 +77,12 @@ enum PurchaseOrderStatus {
 
 /// Lifecycle of a posted financial document. Posted documents are never edited; a correction
 /// reverses them (ledger reversal entries) and marks them REVERSED.
+/// A line of a customer damage entry: the damaged goods brought back, or what was given instead.
+enum DamageLineKind {
+  DAMAGED
+  REPLACEMENT
+}
+
 enum PostingStatus {
   POSTED
   REVERSED
@@ -109,6 +115,8 @@ enum ClaimType {
   BOOKER_SALARY
   /// Any other expense we paid for the company (an Expense); the company pays it back.
   COMPANY_EXPENSE
+  /// Damaged goods a customer brought back (Damage screen); settled with the company.
+  CUSTOMER_DAMAGE
 }
 
 enum ClaimStatus {
@@ -157,6 +165,8 @@ enum StockMovementType {
   RETURN_TO_COMPANY
   ADJUSTMENT
   REVERSAL
+  /// Goods given to a customer in exchange for damaged ones (Damage screen).
+  DAMAGE_REPLACEMENT
 }
 
 enum StockAdjustmentReason {
@@ -304,6 +314,8 @@ model Tenant {
   expenses             Expense[]
   ledgerEntries        LedgerEntry[]
   customerReturns      CustomerReturn[]
+  damageReturns        DamageReturn[]
+  damageReturnLines    DamageReturnLine[]
   customerDiscounts    CustomerProductDiscount[]
   bulkOrderLayouts     BulkOrderLayout[]
 }
@@ -446,36 +458,38 @@ model Company {
 /// Current rates live on the product for fast order entry; every change also appends a
 /// ProductPriceHistory row with its effective date.
 model Product {
-  id            String       @id @default(cuid())
-  tenantId      String
-  companyId     String
-  name          String
+  id              String       @id @default(cuid())
+  tenantId        String
+  companyId       String
+  name            String
   /// Printed on bills instead of the full name when set (keeps small bills short).
-  shortName     String?
+  shortName       String?
   /// Short code for keyboard-first search in order entry.
-  code          String
+  code            String
   /// Smallest unit; all quantities for this product are stored in it.
-  baseUnit      String       @default("HALF_DOZEN")
+  baseUnit        String       @default("HALF_DOZEN")
   /// Unit the rates below are quoted in.
-  priceUnit     String       @default("DOZEN")
-  purchaseRate  Decimal      @db.Decimal(14, 2)
-  saleRate      Decimal      @db.Decimal(14, 2)
-  discountType  DiscountType @default(NONE)
+  priceUnit       String       @default("DOZEN")
+  purchaseRate    Decimal      @db.Decimal(14, 2)
+  saleRate        Decimal      @db.Decimal(14, 2)
+  discountType    DiscountType @default(NONE)
   /// Base discount: percent (0–100) or PKR per price unit, depending on `discountType`.
   /// Quantity slabs in ProductDiscountTier can replace it for larger lines.
-  discountValue Decimal      @default(0) @db.Decimal(14, 2)
+  discountValue   Decimal      @default(0) @db.Decimal(14, 2)
   /// In base units.
-  minStockLevel Int          @default(0)
+  minStockLevel   Int          @default(0)
+  /// Sold only in whole dozens (no half dozen on orders and counter sales).
+  wholeDozensOnly Boolean      @default(false)
   /// Off unless the tenant enables tax.
-  taxRate       Decimal      @default(0) @db.Decimal(5, 2)
-  isActive      Boolean      @default(true)
+  taxRate         Decimal      @default(0) @db.Decimal(5, 2)
+  isActive        Boolean      @default(true)
   /// Client-generated id of the create request; a retried create returns the same record.
-  requestId     String?
-  createdAt     DateTime     @default(now())
-  updatedAt     DateTime     @updatedAt
+  requestId       String?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
 
-  tenant             Tenant                @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  company            Company               @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict)
+  tenant             Tenant                    @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  company            Company                   @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict)
   priceHistory       ProductPriceHistory[]
   discountTiers      ProductDiscountTier[]
   unitConversions    UnitConversion[]
@@ -487,6 +501,7 @@ model Product {
   stockAdjustments   StockAdjustment[]
   salesOrderLines    SalesOrderLine[]
   customerReturns    CustomerReturn[]
+  damageLines        DamageReturnLine[]
   customerDiscounts  CustomerProductDiscount[]
 
   @@unique([tenantId, id])
@@ -606,13 +621,14 @@ model Customer {
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
 
-  tenant        Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  area          Area?             @relation(fields: [tenantId, areaId], references: [tenantId, id], onDelete: Restrict)
+  tenant        Tenant                    @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  area          Area?                     @relation(fields: [tenantId, areaId], references: [tenantId, id], onDelete: Restrict)
   salesOrders   SalesOrder[]
   bills         Bill[]
   payments      CustomerPayment[]
   oldBills      CustomerOldBill[]
   returns       CustomerReturn[]
+  damageReturns DamageReturn[]
   discounts     CustomerProductDiscount[]
   ledgerEntries LedgerEntry[]
 
@@ -898,6 +914,8 @@ model CompanyClaim {
   salesOrderId    String?
   /// The expense charged back to the company (booker salary, company expense).
   expenseId       String?
+  /// The customer damage entry it came from (Damage screen).
+  damageReturnId  String?
   appliedToBillId String?
   reversedAt      DateTime?
   note            String?
@@ -906,12 +924,13 @@ model CompanyClaim {
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
 
-  tenant        Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  company       Company      @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict)
-  product       Product?     @relation(fields: [tenantId, productId], references: [tenantId, id], onDelete: Restrict)
-  salesOrder    SalesOrder?  @relation(fields: [tenantId, salesOrderId], references: [tenantId, id], onDelete: Restrict)
-  expense       Expense?     @relation(fields: [tenantId, expenseId], references: [tenantId, id], onDelete: Restrict)
-  appliedToBill CompanyBill? @relation(fields: [tenantId, appliedToBillId], references: [tenantId, id], onDelete: Restrict)
+  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  company       Company       @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict)
+  product       Product?      @relation(fields: [tenantId, productId], references: [tenantId, id], onDelete: Restrict)
+  salesOrder    SalesOrder?   @relation(fields: [tenantId, salesOrderId], references: [tenantId, id], onDelete: Restrict)
+  expense       Expense?      @relation(fields: [tenantId, expenseId], references: [tenantId, id], onDelete: Restrict)
+  damageReturn  DamageReturn? @relation(fields: [tenantId, damageReturnId], references: [tenantId, id], onDelete: Restrict)
+  appliedToBill CompanyBill?  @relation(fields: [tenantId, appliedToBillId], references: [tenantId, id], onDelete: Restrict)
 
   @@unique([tenantId, id])
   @@unique([tenantId, number])
@@ -1149,6 +1168,7 @@ model SalesOrder {
   claims    CompanyClaim[]
   payments  CustomerPayment[]
   returns   CustomerReturn[]
+  damages   DamageReturn[]
 
   @@unique([tenantId, id])
   @@unique([tenantId, number])
@@ -1203,6 +1223,64 @@ model SalesOrderLine {
   @@unique([tenantId, salesOrderId, productId])
   @@index([tenantId, productId])
   @@index([tenantId, companyId])
+}
+
+/// Damaged goods a customer brought back (Damage screen) and what they got for them: other goods
+/// in exchange (REPLACEMENT lines), a credit on their account, or both. The customer's account
+/// changes by damaged value − replacement value (credit when positive, charge when negative).
+/// Damaged goods go into the DAMAGED bucket; replacements leave saleable stock. Each damaged
+/// line's company gets an AWAITING claim at the purchase rate. Cancelled by reversal.
+model DamageReturn {
+  id                String        @id @default(cuid())
+  tenantId          String
+  number            Int
+  customerId        String
+  /// The counter sale it was deducted from ("− Damage" on the sale), when there was one.
+  salesOrderId      String?
+  returnDate        DateTime      @db.Date
+  /// Value of the damaged goods (credited to the customer).
+  damagedAmount     Decimal       @db.Decimal(14, 2)
+  /// Value of the goods given in exchange (charged to the customer).
+  replacementAmount Decimal       @db.Decimal(14, 2)
+  status            PostingStatus @default(POSTED)
+  reversedAt        DateTime?
+  reversalReason    String?
+  note              String?
+  requestId         String?
+  createdById       String?
+  createdAt         DateTime      @default(now())
+
+  tenant     Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  customer   Customer           @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: Restrict)
+  salesOrder SalesOrder?        @relation(fields: [tenantId, salesOrderId], references: [tenantId, id], onDelete: Restrict)
+  lines      DamageReturnLine[]
+  claims     CompanyClaim[]
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, number])
+  @@unique([tenantId, requestId])
+  @@index([tenantId, customerId, returnDate])
+  @@index([tenantId, salesOrderId])
+}
+
+model DamageReturnLine {
+  id             String         @id @default(cuid())
+  tenantId       String
+  damageReturnId String
+  kind           DamageLineKind
+  productId      String
+  /// Base units (packets).
+  quantity       Int
+  /// Per dozen.
+  rate           Decimal        @db.Decimal(14, 2)
+  amount         Decimal        @db.Decimal(14, 2)
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  damageReturn DamageReturn @relation(fields: [tenantId, damageReturnId], references: [tenantId, id], onDelete: Cascade)
+  product      Product      @relation(fields: [tenantId, productId], references: [tenantId, id], onDelete: Restrict)
+
+  @@index([tenantId, damageReturnId])
+  @@index([tenantId, productId])
 }
 
 /// Goods from an EARLIER sale that the customer gave back at a day-end (not today's order, whose

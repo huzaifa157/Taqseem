@@ -166,7 +166,8 @@ export async function dailyReport(ctx: ServiceCtx, date: Date) {
       const of = (type: string, bucket = "SALEABLE") =>
         day.find((m) => m.type === type && m.bucket === bucket)?._sum.quantity ?? 0;
       const received = of("GOODS_RECEIPT") + of("OPENING");
-      const dispatched = -of("DISPATCH");
+      // Out to customers: sales, and goods given in exchange for damage.
+      const dispatched = -of("DISPATCH") - of("DAMAGE_REPLACEMENT");
       const returned = of("CUSTOMER_RETURN");
       const closing =
         opening +
@@ -205,8 +206,77 @@ export async function dailyReport(ctx: ServiceCtx, date: Date) {
 
   const money = showMoney ? await moneyFor(ctx, date, next) : null;
 
+  // ── Each bill: what it came to (after the special discount) and its cost of goods ──
+  const costOfLines = (lines: SnapshotLine[]) =>
+    lines.reduce(
+      (s, l) =>
+        s.add(
+          calculateLineAmounts({
+            quantity: l.quantity,
+            baseUnitsPerPriceUnit: PACKETS_PER_DOZEN,
+            rate: productById.get(l.productId)?.purchaseRate ?? 0,
+          }).netAmount.toString(),
+        ),
+      ZERO,
+    );
+  const billOf = (o: (typeof orders)[number]) => {
+    const lines = (o.bill?.revisions[0]?.lines ?? []) as SnapshotLine[];
+    const sales = o.bill?.netAmount ?? ZERO;
+    const cost = showCost ? costOfLines(lines) : null;
+    return {
+      sales,
+      quantity: lines.reduce((s, l) => s + l.quantity, 0),
+      items: lines.length,
+      cost,
+      profit: cost ? sales.sub(cost) : null,
+    };
+  };
+  const totalsOf = (list: typeof orders) => {
+    const bills = list.map(billOf);
+    const sales = bills.reduce((s, b) => s.add(b.sales), ZERO);
+    const cost = showCost ? bills.reduce((s, b) => s.add(b.cost!), ZERO) : null;
+    return { sales, cost, gross: cost ? sales.sub(cost) : null };
+  };
+
+  // ── Counter sales on their own: each sale, what was paid at the counter, and its profit ──
+  const paidAtCounter = counterOrders.length
+    ? await ctx.db.customerPayment.groupBy({
+        by: ["salesOrderId"],
+        where: { salesOrderId: { in: counterOrders.map((o) => o.id) }, status: "POSTED" },
+        _sum: { amount: true },
+      })
+    : [];
+  const paidOf = new Map(paidAtCounter.map((g) => [g.salesOrderId!, g._sum.amount ?? ZERO]));
+  const counterList = counterOrders
+    .map((o) => {
+      const b = billOf(o);
+      const paid = paidOf.get(o.id) ?? ZERO;
+      return {
+        id: o.id,
+        number: o.number,
+        customerName: o.customer.name,
+        ...b,
+        paid,
+        onAccount: Prisma.Decimal.max(b.sales.sub(paid), 0),
+      };
+    })
+    .sort((a, b) => a.number - b.number);
+  const counterTotals = totalsOf(counterOrders);
+  const counter = {
+    sales: counterOrders.length,
+    billed: counterTotals.sales,
+    quantity: counterList.reduce((s, o) => s + o.quantity, 0),
+    paid: counterList.reduce((s, o) => s.add(o.paid), ZERO),
+    onAccount: counterList.reduce((s, o) => s.add(o.onAccount), ZERO),
+    cost: counterTotals.cost,
+    profit: counterTotals.gross,
+    list: counterList,
+  };
+
   // ── Profit (owner / accountant): sales − cost of goods sold − expenses ──
-  const salesTotal = sum(productsSold, (p) => p.amount);
+  // Sales are what the bills came to (after any special discount), split delivery / counter.
+  const deliveryTotals = totalsOf(deliveryOrders);
+  const salesTotal = deliveryTotals.sales.add(counterTotals.sales);
   const costTotal = showCost ? sum(productsSold, (p) => p.cost) : null;
   const profit =
     showCost && costTotal && money
@@ -217,6 +287,8 @@ export async function dailyReport(ctx: ServiceCtx, date: Date) {
           // Paid for companies comes back on their bills: not our cost.
           expenses: money.expenses.total.sub(money.expenses.forCompanies),
           net: salesTotal.sub(costTotal).sub(money.expenses.total.sub(money.expenses.forCompanies)),
+          delivery: deliveryTotals,
+          counter: counterTotals,
         }
       : null;
 
@@ -281,8 +353,8 @@ export async function dailyReport(ctx: ServiceCtx, date: Date) {
     deliveries,
     specialRates,
     discountChanges,
-    /** Counter sales billed on the day (collected at the warehouse). */
-    counter: { sales: counterOrders.length, billed: sum(counterOrders, (o) => o.bill?.netAmount) },
+    /** Counter sales billed on the day (collected at the warehouse), each with its profit. */
+    counter,
     productsSold,
     soldTotals: {
       quantity: productsSold.reduce((s, p) => s + p.quantity, 0),

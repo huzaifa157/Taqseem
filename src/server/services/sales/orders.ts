@@ -3,6 +3,7 @@ import "server-only";
 import { Prisma } from "@/generated/prisma/client";
 import type { SalesOrderStatus } from "@/generated/prisma/enums";
 import { formatMoney } from "@/lib/format";
+import { formatDozens, PACKETS_PER_DOZEN } from "@/lib/units";
 import type { DiscountType } from "@/lib/pricing";
 import {
   billTotals,
@@ -75,6 +76,10 @@ export function priceLines(
 ): OrderLine[] {
   return input.lines.map((line) => {
     const p = products.get(line.productId)!;
+    if (p.wholeDozensOnly && line.quantity % PACKETS_PER_DOZEN !== 0)
+      throw new ServiceError(
+        `${p.name} is sold in whole dozens only: enter 1, 2, 3 … dozen, not ${formatDozens(line.quantity)}.`,
+      );
     const { discount, error } = readCustomerDiscount(line.discount, p.saleRate.toString());
     if (error) throw new ServiceError(`${p.name}: ${error}`);
     return priceLineFor(
@@ -847,6 +852,8 @@ export async function orderEntryContext(
     onHand: number;
     /** This customer's own discount per dozen on the product (null = the product's discount). */
     customerDiscount: string | null;
+    /** Sold in whole dozens only (no 0.5). */
+    wholeDozensOnly: boolean;
   }[] = [];
   if (warehouseId) {
     const rows = await ctx.db.product.findMany({
@@ -875,6 +882,7 @@ export async function orderEntryContext(
       available: (positions.get(p.id)?.available ?? 0) + (posted?.stock.get(p.id) ?? 0),
       onHand: (positions.get(p.id)?.onHand ?? 0) + (posted?.stock.get(p.id) ?? 0),
       customerDiscount: discounts.get(p.id)?.toFixed(2) ?? null,
+      wholeDozensOnly: p.wholeDozensOnly,
     }));
   }
 

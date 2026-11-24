@@ -34,6 +34,7 @@ const CLEARED_LEDGER_REFERENCES = [
   "SalesOrder",
   "Bill",
   "CustomerReturn",
+  "DamageReturn",
   "CompanyBill",
   "CompanyPayment",
   "CompanyClaim",
@@ -51,6 +52,7 @@ const SEQUENCES: Record<string, string> = {
   COMPANY_PAYMENT: "CompanyPayment",
   COMPANY_CLAIM: "CompanyClaim",
   CUSTOMER_PAYMENT: "CustomerPayment",
+  DAMAGE_RETURN: "DamageReturn",
 };
 
 /** Tables whose rows are deleted (their user triggers are off during the clear). */
@@ -60,6 +62,8 @@ const TOUCHED = [
   "CustomerPayment",
   "LedgerEntry",
   "CustomerReturn",
+  "DamageReturnLine",
+  "DamageReturn",
   "BillRevision",
   "Bill",
   "SalesOrderLine",
@@ -204,6 +208,8 @@ export async function clearEntries(ctx: ServiceCtx, input: unknown): Promise<Cle
       await del("PaymentAllocation");
       await del("CustomerPayment", `AND id = ANY ($2::text[])`, [payments]);
       await del("CustomerReturn");
+      await del("DamageReturnLine");
+      await del("DamageReturn");
       await del("BillRevision");
       await del("Bill");
       await del("SalesOrderLine");

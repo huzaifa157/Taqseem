@@ -12,6 +12,7 @@ import { listParamsSchema } from "@/lib/list-params";
 import { can } from "@/server/auth/permissions";
 import { requireTenantContext } from "@/server/auth/session";
 import { addToBalanceAction } from "@/server/payment-actions";
+import { areasForOrders } from "@/server/services/master/areas";
 import { listCompanies } from "@/server/services/master/companies";
 import { listCustomers } from "@/server/services/master/customers";
 
@@ -37,7 +38,7 @@ async function Ledgers({ searchParams }: PageProps<"/ledgers">) {
   const params = listParamsSchema.parse(sp);
   const ctx = await requireTenantContext("ledgers.view");
   const canAdd = can(ctx.user.role, "payments.manage");
-  const [customers, companies, everyone] = await Promise.all([
+  const [customers, companies, everyone, areas] = await Promise.all([
     listCustomers(ctx, params, sp),
     listCompanies(ctx, listParamsSchema.parse({ status: params.status }), {}),
     // For "Add to a customer's balance": every active customer, to search.
@@ -54,11 +55,14 @@ async function Ledgers({ searchParams }: PageProps<"/ledgers">) {
           },
         })
       : Promise.resolve([]),
+    canAdd ? areasForOrders(ctx) : Promise.resolve([]),
   ]);
 
   return (
     <div className="space-y-8">
-      {canAdd ? <AddToBalanceForm action={addToBalanceAction} customers={everyone} /> : null}
+      {canAdd ? (
+        <AddToBalanceForm action={addToBalanceAction} customers={everyone} areas={areas} />
+      ) : null}
       <section aria-labelledby="company-ledgers">
         <h2 id="company-ledgers" className="mb-2 text-lg font-semibold">
           Companies

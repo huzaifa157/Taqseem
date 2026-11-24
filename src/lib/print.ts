@@ -241,11 +241,12 @@ export function paperHint(s: PrintSettings): string {
 
 /** One line of the bill (one row; a long name is cut short). */
 export const BILL_ROW_EM = 1.6;
-// Measured on a printed bill (2026-11-24): page 1 head 8.3 em, later head 4.9, footer 1.45,
+// Measured on a printed bill (2026-11-24): page 1 head 8.3 em (10.2 with the larger logo), later
+// head 4.9, footer 1.45,
 // totals row + account + "This bill" 9.3 (10.6 with paid, minimum payment and special discount).
 // Each has a little to spare, so a page is filled without anything spilling over.
-/** Page 1 above the lines: letterhead, bill to, the column heads. */
-const FIRST_HEAD_EM = 9.5;
+/** Page 1 above the lines: letterhead (logo 4.4 em tall), bill to, the column heads. */
+const FIRST_HEAD_EM = 10.5;
 /** Later pages above the lines: the short header and the column heads. */
 const NEXT_HEAD_EM = 5.5;
 /** Every page's footer: the bill note or "continued", and "Page 1 of 2". */

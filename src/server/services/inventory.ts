@@ -46,6 +46,7 @@ export const MOVEMENT_LABEL: Record<StockMovementType, string> = {
   RETURN_TO_COMPANY: "Returned to company",
   ADJUSTMENT: "Adjustment",
   REVERSAL: "Reversal",
+  DAMAGE_REPLACEMENT: "Replacement for damage",
 };
 
 export type StockFilters = {

@@ -34,6 +34,10 @@ function paidLabel(paid: Paid) {
 
 const capitalise = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
+type Damage = { amount: { toString(): string }; numbers: number[] };
+const damageLabel = (d: Damage) =>
+  `Damage returned${d.numbers.length ? ` (#${d.numbers.join(", #")})` : ""}`;
+
 type Sums = { dz: number; discount: Decimal; amount: Decimal };
 const NO_SUMS: Sums = { dz: 0, discount: new Decimal(0), amount: new Decimal(0) };
 /** Each line at its full price (the discount is taken off under the subtotal). */
@@ -70,6 +74,7 @@ export function BillDocument({
   totalDue,
   minimum,
   paid,
+  damage,
   showCompany,
   pagination = null,
 }: {
@@ -88,6 +93,8 @@ export function BillDocument({
   minimum?: { toString(): string };
   /** Paid with the order (full bill only): shown with the balance left. */
   paid?: Paid;
+  /** Damage the customer brought back, deducted from this bill (full bill only). */
+  damage?: Damage;
   showCompany: boolean;
   /** Page sizes when the bill is printed one per sheet; null: one block. */
   pagination?: BillPagination | null;
@@ -107,7 +114,8 @@ export function BillDocument({
   const dz = formatDozensCell;
   const counter = view.order.fulfilment === "COUNTER";
   const paidAmount = paid ? new Decimal(paid.amount.toString()) : new Decimal(0);
-  const balance = new Decimal(totalDue.toString()).sub(paidAmount);
+  const damageAmount = damage ? new Decimal(damage.amount.toString()) : new Decimal(0);
+  const balance = new Decimal(totalDue.toString()).sub(paidAmount).sub(damageAmount);
   const hasOld = oldBalance && !new Decimal(oldBalance.toString()).isZero();
   const sale = counter
     ? [
@@ -176,7 +184,7 @@ export function BillDocument({
                       <img
                         src={business.logoUrl}
                         alt=""
-                        className="h-[2.6em] w-auto max-w-[7em] object-contain"
+                        className="h-[4.4em] w-auto max-w-[12em] object-contain"
                       />
                     ) : null}
                     <div className="min-w-0">
@@ -315,6 +323,12 @@ export function BillDocument({
                   )}
                   <dt>This bill</dt>
                   <dd>+{formatMoney(thisBill)}</dd>
+                  {damage && !damageAmount.isZero() ? (
+                    <>
+                      <dt>{damageLabel(damage)}</dt>
+                      <dd>−{formatMoney(damageAmount.toFixed(2))}</dd>
+                    </>
+                  ) : null}
                   {paid && !paidAmount.isZero() ? (
                     <>
                       <dt>{paidLabel(paid)}</dt>
@@ -399,6 +413,7 @@ export function CompactBillDocument({
   totalDue,
   minimum,
   paid,
+  damage,
 }: {
   view: BillView;
   business: PrintProfile["business"];
@@ -412,9 +427,12 @@ export function CompactBillDocument({
   minimum?: { toString(): string };
   /** Paid with the order (full bill only): shown with the balance left. */
   paid?: Paid;
+  /** Damage the customer brought back, deducted from this bill (full bill only). */
+  damage?: Damage;
 }) {
   const dz = formatDozensCell;
   const paidAmount = paid ? new Decimal(paid.amount.toString()) : new Decimal(0);
+  const damageAmount = damage ? new Decimal(damage.amount.toString()) : new Decimal(0);
   // Each line at its full rate; the company discount is taken off once, under the total (as on
   // the office's old bills: total, "T/O less", net).
   const gross = (l: Line) => new Decimal(l.netAmount).add(l.discountAmount);
@@ -425,10 +443,20 @@ export function CompactBillDocument({
     .join(" · ");
   return (
     <article className="space-y-[0.35em] leading-tight">
-      <header className="flex items-baseline justify-between gap-2 border-b border-black pb-[0.2em]">
-        <div className="min-w-0">
-          <p className="truncate font-bold">{business.name}</p>
-          {business.phone ? <p className="text-[0.85em]">{business.phone}</p> : null}
+      <header className="flex items-center justify-between gap-2 border-b border-black pb-[0.2em]">
+        <div className="flex min-w-0 items-center gap-[0.4em]">
+          {business.logoUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element -- a stored data: URL; next/image adds nothing here
+            <img
+              src={business.logoUrl}
+              alt=""
+              className="h-[2.6em] w-auto max-w-[6em] shrink-0 object-contain"
+            />
+          ) : null}
+          <div className="min-w-0">
+            <p className="truncate font-bold">{business.name}</p>
+            {business.phone ? <p className="text-[0.85em]">{business.phone}</p> : null}
+          </div>
         </div>
         <div className="shrink-0 text-right">
           <p className="font-bold">
@@ -496,13 +524,25 @@ export function CompactBillDocument({
         <dd className={`${SMALL} tabular-nums`}>{formatMoney(previous)}</dd>
         <dt className={`${SMALL} font-semibold`}>Total due</dt>
         <dd className={`${SMALL} font-semibold tabular-nums`}>{formatMoney(totalDue)}</dd>
+        {damage && !damageAmount.isZero() ? (
+          <>
+            <dt className={SMALL}>{damageLabel(damage)}</dt>
+            <dd className={`${SMALL} tabular-nums`}>−{formatMoney(damageAmount.toFixed(2))}</dd>
+          </>
+        ) : null}
         {paid && !paidAmount.isZero() ? (
           <>
             <dt className={SMALL}>{paidLabel(paid)}</dt>
             <dd className={`${SMALL} tabular-nums`}>−{formatMoney(paidAmount.toFixed(2))}</dd>
+          </>
+        ) : null}
+        {(paid && !paidAmount.isZero()) || !damageAmount.isZero() ? (
+          <>
             <dt className="font-bold">Balance due</dt>
             <dd className="font-bold tabular-nums">
-              {formatMoney(new Decimal(totalDue.toString()).sub(paidAmount).toFixed(2))}
+              {formatMoney(
+                new Decimal(totalDue.toString()).sub(paidAmount).sub(damageAmount).toFixed(2),
+              )}
             </dd>
           </>
         ) : null}
@@ -537,6 +577,7 @@ export function billDocuments(
       totalDue={view.totalDue}
       minimum={view.minimumPayment}
       paid={view.paid}
+      damage={view.damage}
     />
   ) : (
     <BillDocument
@@ -549,6 +590,7 @@ export function billDocuments(
       totalDue={view.totalDue}
       minimum={view.minimumPayment}
       paid={view.paid}
+      damage={view.damage}
       showCompany={false}
       pagination={billPagination(settings)}
     />

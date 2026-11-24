@@ -19,6 +19,7 @@ type Defaults = {
   discountType?: string;
   discountValue?: string;
   minStockLevel?: number;
+  wholeDozensOnly?: boolean;
   slabs?: { minQuantity: number; discountValue: string }[];
 };
 
@@ -130,6 +131,18 @@ export function productFields(
       inputMode: "decimal",
       defaultValue: d.minStockLevel ? dozens(d.minStockLevel) : "",
       hint: "Below this, the product shows as low stock.",
+      width: "md",
+    },
+    {
+      kind: "select",
+      name: "wholeDozensOnly",
+      label: "Sold in",
+      options: [
+        { value: "false", label: "Half or whole dozens" },
+        { value: "true", label: "Whole dozens only" },
+      ],
+      defaultValue: d.wholeDozensOnly ? "true" : "false",
+      hint: "Whole dozens only: orders and counter sales take 1, 2, 3 … dozen, never 0.5.",
       width: "md",
     },
   ];

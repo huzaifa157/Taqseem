@@ -45,7 +45,7 @@ export async function getBillView(ctx: ServiceCtx, orderId: string) {
   const snapshot = revision.lines as SnapshotLine[];
   const companyTotals = revision.companyTotals as SnapshotCompany[];
 
-  const [products, companies, tenant, paidAtSale] = await Promise.all([
+  const [products, companies, tenant, paidAtSale, damages] = await Promise.all([
     ctx.db.product.findMany({
       where: { id: { in: snapshot.map((l) => l.productId) } },
       select: { id: true, code: true, name: true, shortName: true },
@@ -59,6 +59,11 @@ export async function getBillView(ctx: ServiceCtx, orderId: string) {
     ctx.db.customerPayment.findMany({
       where: { salesOrderId: order.id, status: "POSTED" },
       select: { amount: true, method: true },
+    }),
+    // Damage the customer brought back, deducted from this bill ("− Damage" on a counter sale).
+    ctx.db.damageReturn.findMany({
+      where: { salesOrderId: order.id, status: "POSTED" },
+      select: { number: true, damagedAmount: true },
     }),
   ]);
   const productById = new Map(products.map((p) => [p.id, p]));
@@ -119,11 +124,19 @@ export async function getBillView(ctx: ServiceCtx, orderId: string) {
       amount: paidAtSale.reduce((sum, p) => sum.add(p.amount), D(0)),
       methods: [...new Set(paidAtSale.map((p) => p.method))],
     },
+    /** Damage deducted from this bill: comes off the balance due like a payment. */
+    damage: {
+      amount: damages.reduce((sum, d) => sum.add(d.damagedAmount), D(0)),
+      numbers: damages.map((d) => d.number),
+    },
     // From the customer's credit limit today, so a reprint follows a changed limit.
     minimumPayment: D(
       minimumPayment({
         previous: previousTotal.toString(),
-        totalDue: totalDue.toString(),
+        // Damage deducted from this bill is owed no more.
+        totalDue: totalDue
+          .sub(damages.reduce((sum, d) => sum.add(d.damagedAmount), D(0)))
+          .toString(),
         creditLimit: order.customer.creditLimit?.toString() ?? null,
       }).toFixed(2),
     ),

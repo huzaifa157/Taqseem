@@ -139,6 +139,8 @@ export async function logClaim(
     salesOrderId?: string;
     /** The expense this claim charges back (booker salary, company expense). */
     expenseId?: string;
+    /** The customer damage entry it comes from (Damage screen). */
+    damageReturnId?: string;
     requestId?: string;
     /** Wait for settlement with the company before any money moves. */
     awaiting?: boolean;
@@ -159,6 +161,7 @@ export async function logClaim(
       status: c.awaiting ? "AWAITING" : "PENDING",
       salesOrderId: c.salesOrderId ?? null,
       expenseId: c.expenseId ?? null,
+      damageReturnId: c.damageReturnId ?? null,
       note: c.note,
       requestId: c.requestId,
       createdById: ctx.user.id,

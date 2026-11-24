@@ -2,6 +2,70 @@
 
 Running log of what has been built, decisions taken, and open items. Newest first.
 
+## Old customers added from the Ledgers box — done
+
+- In "Add to a customer's balance" (Ledgers), a name not in the list offers "+ New customer":
+  name (as typed), phone and area (both optional), then the amount → Add. `addToBalanceAction`
+  creates the customer (`createCustomerTx`: unique names, audit, retry-safe by request id) with
+  the amount as their opening balance, and says "… added as a new customer, owing Rs X".
+- Enter in the customer search now only picks (it no longer also sends the form, which made a
+  stray "Choose the customer" error); Enter in the new customer's name / phone goes to the amount.
+
+## Damage deducted from a counter sale's bill — done
+
+- The customer chooses: goods in exchange (Damage screen, or add them to the sale) or the damage
+  taken off this bill. **"− Damage"** on the counter-sale screen (next to Special discount) opens
+  a panel inside the grid's section: damaged items (search, dozens or "6pk", rate = what the
+  customer pays, editable), "Bill − damage = to pay". "Paid now → Full" and "Goes on account"
+  use the bill less the damage; the credit check counts the damage like money paid.
+- Saved with the sale (`createCounterSale` → `postDamageReturn`, after the bill is posted so its
+  frozen previous balance is unchanged): a damage entry linked to the sale
+  (`DamageReturn.salesOrderId`, migration `20261124150000_damage_on_sale`) with damaged stock,
+  the customer credit and an AWAITING company claim. The sale's own amounts (sales, profit) stay
+  the full bill.
+- The bill (full and compact) prints "Damage returned (#N) −X" in the account block and takes it
+  off the balance due (and the minimum payment).
+- Only for customers already in the list. Delivery orders: damage the driver brings back is
+  entered at day-end (returns of earlier goods). Correcting a counter sale leaves its damage
+  entry as it is (cancel it on the Damage screen if needed).
+- `postDamageReturn` / `priceDamage` split out of `createDamageReturn` for this.
+
+## Whole-dozen products, bigger logo on bills, F2 / F3 on order screens — done
+
+- **Sold in whole dozens only**: `Product.wholeDozensOnly` (migration
+  `20261124120000_whole_dozens_only`), a "Sold in" choice on the product form. `priceLines`
+  refuses half a dozen for such a product (orders, counter sales and their corrections, bulk
+  orders). On the order / counter screen such a product starts at 1 dozen (not 0.5) and 0.5 is
+  marked "Whole dozens only" before saving.
+- **Logo**: 4.4 em tall on the full bill (was 2.6), and now on the compact bill too. Page 1's
+  allowance went 9.5 → 10.5 em to match (an 18-line A5 bill with a logo still prints on one page).
+- **Keys** on order, counter sale and their edit / correct screens: **F2** saves and prints the
+  bill (new "Book & print" button on orders; the bill opens with the print dialog), **F3** saves
+  and starts the next one (new only). "Change customer" moved from F2 to **F4**. Keys work from
+  anywhere on the screen; buttons show them; the shortcut list is updated. After printing a
+  delivery order's bill, the back link is "Next order".
+
+## Customer damage screen, and counter sales in the daily report — done
+
+- **Damage** in the sidebar (`/damage`, `/damage/new`, `/damage/[id]`; `services/damage.ts`,
+  migration `20261124090000_customer_damage`: `DamageReturn` + `DamageReturnLine`, claim type
+  `CUSTOMER_DAMAGE`, stock movement `DAMAGE_REPLACEMENT`, `CompanyClaim.damageReturnId`).
+  One entry: customer, damaged items (into DAMAGED stock), optional items given in exchange (out
+  of saleable stock, refused when short). The customer's account changes by damaged value −
+  exchange value: a credit (CUSTOMER_RETURN) when positive, a charge (ADJUSTMENT) when the
+  exchange is worth more, nothing for an equal swap. Values default to what the customer pays
+  (sale rate less their own discount or the slabs, `priceLineFor`), editable. Each damaged line
+  claims its company at the purchase rate as AWAITING (settle under Purchases → Claims), as the
+  owner chose. Cancel = reversal (documents.reverse), refused once the damaged stock went back
+  to the company or a claim was deducted. Included in Clear entries. Decisions (owner,
+  2026-11-24): credit at what they paid; a dearer exchange is charged to the account; company
+  claims wait for approval.
+- **Daily report**: a Counter sales section (each sale: dozens, bill, paid at the counter, on
+  account, cost and profit for cost roles, with totals; also in the Excel export), a "Whole day /
+  Counter sales only" switch, and the Profit block split Deliveries / Counter / Total. Profit
+  sales are now what the bills came to (after any special discount), not the sum of lines.
+  Replacements for damage count as stock out in the stock section.
+
 ## Add to a customer's balance (Ledgers, order and counter sale) — done
 
 - **Ledgers**: "Add to a customer's balance" box at the top: search the customer → amount →

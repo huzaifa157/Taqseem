@@ -38,7 +38,42 @@ export async function GET(request: Request) {
     rows.push(
       [{ value: "Cost of goods sold" }, xMoney(r.profit.cost)],
       [{ value: "Gross profit" }, xMoney(r.profit.gross)],
+      [{ value: "  deliveries" }, xMoney(r.profit.delivery.gross!)],
+      [{ value: "  counter sales" }, xMoney(r.profit.counter.gross!)],
       [{ value: "Net profit" }, xMoney(r.profit.net)],
+    );
+  }
+  if (r.counter.list.length) {
+    rows.push(
+      blank,
+      [xBold("Counter sales")],
+      [
+        "Sale",
+        "Customer",
+        "Quantity",
+        "Bill",
+        "Paid",
+        "On account",
+        ...(r.showCost ? ["Cost", "Profit"] : []),
+      ].map(xBold),
+      ...r.counter.list.map((o) => [
+        { value: `#${o.number}` },
+        { value: o.customerName },
+        { value: formatDozens(o.quantity) },
+        xMoney(o.sales),
+        xMoney(o.paid),
+        xMoney(o.onAccount),
+        ...(r.showCost ? [xMoney(o.cost!), xMoney(o.profit!)] : []),
+      ]),
+      [
+        xBold("Total"),
+        null,
+        { value: formatDozens(r.counter.quantity) },
+        xMoney(r.counter.billed),
+        xMoney(r.counter.paid),
+        xMoney(r.counter.onAccount),
+        ...(r.showCost ? [xMoney(r.counter.cost!), xMoney(r.counter.profit!)] : []),
+      ],
     );
   }
   rows.push(

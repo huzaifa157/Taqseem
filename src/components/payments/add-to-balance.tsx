@@ -7,6 +7,7 @@ import { useRequestId } from "@/components/form/use-request-id";
 import { Combobox, rankText } from "@/components/sales/combobox";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { NativeSelect } from "@/components/ui/native-select";
 import { type ActionState, fieldError, idleState } from "@/lib/action-state";
 import { localPhone } from "@/lib/phone";
 import { cn } from "@/lib/utils";
@@ -28,13 +29,18 @@ const LABEL = "text-muted-foreground text-[11px] font-semibold tracking-wider up
 export function AddToBalanceForm({
   action,
   customers,
+  areas,
 }: {
   action: (state: ActionState, formData: FormData) => Promise<ActionState>;
   customers: Customer[];
+  /** For a customer not in the list yet, created here with the amount as opening balance. */
+  areas: { id: string; name: string; warehouseName: string }[];
 }) {
   const [state, formAction, saving] = useActionState(action, idleState);
   const withRequestId = useRequestId();
   const [customer, setCustomer] = useState<Customer | null>(null);
+  // A name not in the list: "+ New customer" (name, phone, area); created when added.
+  const [newName, setNewName] = useState<string | null>(null);
   const [round, setRound] = useState(0);
   const amount = useRef<HTMLInputElement>(null);
   const search = useRef<HTMLInputElement>(null);
@@ -46,6 +52,7 @@ export function AddToBalanceForm({
     setSeen(state);
     if (state.status === "success") {
       setCustomer(null);
+      setNewName(null);
       setRound((r) => r + 1);
     }
   }
@@ -56,10 +63,30 @@ export function AddToBalanceForm({
   useEffect(() => {
     if (customer) amount.current?.focus();
   }, [customer]);
+  useEffect(() => {
+    if (newName !== null) document.getElementById("add-balance-new-phone")?.focus();
+  }, [newName]);
 
   return (
     <form
       action={(fd) => formAction(withRequestId(fd))}
+      onKeyDown={(e) => {
+        // Enter in the customer search only picks (it must not send the form), and a new
+        // customer's name or phone goes on to the amount: it does not add yet.
+        const target = e.target as HTMLElement;
+        if (e.key === "Enter" && target.getAttribute("role") === "combobox") {
+          e.preventDefault();
+          return;
+        }
+        const id = target.id;
+        if (
+          e.key === "Enter" &&
+          (id === "add-balance-new-name" || id === "add-balance-new-phone")
+        ) {
+          e.preventDefault();
+          amount.current?.focus();
+        }
+      }}
       className="bg-card space-y-2 rounded-xl border p-4"
       aria-labelledby="add-balance-heading"
     >
@@ -73,7 +100,58 @@ export function AddToBalanceForm({
       <input type="hidden" name="customerId" value={customer?.id ?? ""} />
       <div className="flex flex-wrap items-end gap-3">
         <div className="min-w-64 flex-1 space-y-1">
-          {customer ? (
+          {newName !== null ? (
+            <div className="flex flex-wrap items-end gap-2">
+              <div className="min-w-40 flex-1 space-y-1">
+                <label htmlFor="add-balance-new-name" className={LABEL}>
+                  New customer
+                </label>
+                <Input
+                  id="add-balance-new-name"
+                  name="newCustomerName"
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  maxLength={120}
+                  required
+                />
+              </div>
+              <div className="w-36 space-y-1">
+                <label htmlFor="add-balance-new-phone" className={LABEL}>
+                  Phone
+                </label>
+                <Input
+                  id="add-balance-new-phone"
+                  name="newCustomerPhone"
+                  inputMode="tel"
+                  placeholder="Optional"
+                  autoComplete="off"
+                />
+              </div>
+              <div className="w-44 space-y-1">
+                <label htmlFor="add-balance-new-area" className={LABEL}>
+                  Area
+                </label>
+                <NativeSelect id="add-balance-new-area" name="newCustomerAreaId" defaultValue="">
+                  <option value="">No area</option>
+                  {areas.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name} ({a.warehouseName})
+                    </option>
+                  ))}
+                </NativeSelect>
+              </div>
+              <button
+                type="button"
+                className="text-brand mb-2 text-xs underline underline-offset-2"
+                onClick={() => {
+                  setNewName(null);
+                  setTimeout(() => search.current?.focus(), 0);
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          ) : customer ? (
             <>
               <p className={LABEL}>Customer</p>
               <div className="flex h-9 items-center gap-2">
@@ -115,6 +193,9 @@ export function AddToBalanceForm({
                 </span>
               )}
               onSelect={setCustomer}
+              onNoMatch={(q) => setNewName(q)}
+              noMatchLabel={(q) => `+ New customer “${q}”`}
+              isExact={(c, q) => c.name.toLowerCase() === q}
               placeholder="Name, shop, phone or area"
             />
           )}
@@ -134,7 +215,10 @@ export function AddToBalanceForm({
             aria-invalid={fieldError(state, "amount") ? true : undefined}
           />
         </div>
-        <div className="min-w-48 flex-1 space-y-1">
+        <div
+          className={cn("min-w-48 flex-1 space-y-1", newName !== null && "hidden")}
+          aria-hidden={newName !== null ? true : undefined}
+        >
           <label htmlFor="add-balance-note" className={LABEL}>
             Note
           </label>
@@ -147,7 +231,7 @@ export function AddToBalanceForm({
             autoComplete="off"
           />
         </div>
-        <Button type="submit" disabled={saving || !customer} className="h-9">
+        <Button type="submit" disabled={saving || !(customer || newName?.trim())} className="h-9">
           {saving ? "Adding…" : "Add"}
         </Button>
       </div>

@@ -42,7 +42,17 @@ export async function assertStockOnHand(
 export async function stockOut(
   tx: TenantTx,
   ctx: ServiceCtx,
-  m: { productId: string; warehouseId: string; quantity: number; orderId: string; at: Date },
+  m: {
+    productId: string;
+    warehouseId: string;
+    quantity: number;
+    orderId: string;
+    at: Date;
+    /** Default: a sale (DISPATCH of a SalesOrder). */
+    type?: "DISPATCH" | "DAMAGE_REPLACEMENT";
+    referenceType?: string;
+    note?: string;
+  },
   batchLeft: Map<string, { id: string; available: number }[]>,
 ) {
   let batches = batchLeft.get(m.productId);
@@ -69,15 +79,16 @@ export async function stockOut(
     await tx.stockMovement.create({
       data: {
         tenantId: ctx.user.tenantId,
-        type: "DISPATCH",
+        type: m.type ?? "DISPATCH",
         productId: m.productId,
         warehouseId: m.warehouseId,
         batchId: part.batchId,
         bucket: "SALEABLE",
         quantity: -part.quantity,
         occurredAt: m.at,
-        referenceType: "SalesOrder",
+        referenceType: m.referenceType ?? "SalesOrder",
         referenceId: m.orderId,
+        note: m.note ?? null,
         createdById: ctx.user.id,
       },
     });

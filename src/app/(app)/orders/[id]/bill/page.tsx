@@ -7,6 +7,7 @@ import { BillSheets } from "@/components/print/bill-sheets";
 import { PrintToolbar } from "@/components/print/print-frame";
 import { billDocuments } from "@/components/sales/bill-document";
 import { Badge } from "@/components/ui/badge";
+import { toDateInput } from "@/lib/dates";
 import { filterParam } from "@/lib/list-params";
 import { paperHint } from "@/lib/print";
 import { requireTenantContext } from "@/server/auth/session";
@@ -27,7 +28,12 @@ export default async function BillPage({ params, searchParams }: PageProps<"/ord
       <PrintToolbar
         back={
           filterParam(sp, "print") === "1"
-            ? { href: "/orders/counter", label: "Next counter sale" }
+            ? view.order.fulfilment === "COUNTER"
+              ? { href: "/orders/counter", label: "Next counter sale" }
+              : {
+                  href: `/orders/new?date=${toDateInput(view.order.deliveryDate)}`,
+                  label: "Next order",
+                }
             : { href: `/orders/${id}`, label: `Order #${view.order.number}` }
         }
         hint={paperHint(profile.print)}

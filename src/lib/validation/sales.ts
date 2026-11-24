@@ -11,6 +11,7 @@ import {
   phoneSchema,
   requestIdSchema,
 } from "./master";
+import { damageLineSchema } from "./damage";
 import { PAYMENT_METHODS } from "./purchasing";
 
 export const ORDER_SOURCES = ["OFFICE", "WHATSAPP", "BOOKER_APP"] as const;
@@ -115,6 +116,8 @@ export const counterSaleSchema = z
     lines: orderLinesSchema,
     /** Rupees off the whole bill (blank: none). */
     specialDiscount: optionalMoneySchema("special discount"),
+    /** Damaged goods the customer brought back, deducted from this bill ("− Damage"). */
+    damaged: z.array(damageLineSchema).max(100).default([]),
     /** Paid at the counter (blank: all on account). */
     paidAmount: optionalMoneySchema("amount paid"),
     method: z.enum(PAYMENT_METHODS).default("CASH"),

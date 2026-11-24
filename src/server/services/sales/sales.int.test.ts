@@ -607,3 +607,16 @@ describe("product set up under the wrong company", () => {
     );
   });
 });
+
+describe("products sold in whole dozens only", () => {
+  it("refuse half a dozen on an order, but take whole dozens", async () => {
+    await prisma.product.update({ where: { id: t.nimko.id }, data: { wholeDozensOnly: true } });
+    await expect(
+      createSalesOrder(t.staff, order([{ productId: t.nimko.id, quantity: "1.5" }])),
+    ).rejects.toThrow(/whole dozens only/);
+    const r = await createSalesOrder(t.staff, order([{ productId: t.nimko.id, quantity: "2" }]));
+    expect(r.number).toBeGreaterThan(0);
+    const c = await orderEntryContext(t.ctx, t.customer.id);
+    expect(c.products.find((p) => p.id === t.nimko.id)?.wholeDozensOnly).toBe(true);
+  });
+});

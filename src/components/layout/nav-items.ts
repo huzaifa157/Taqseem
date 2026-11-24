@@ -6,6 +6,7 @@ import {
   LayoutDashboard,
   Package,
   PackagePlus,
+  PackageX,
   type LucideIcon,
   Receipt,
   Settings,
@@ -53,6 +54,14 @@ export const navItems: NavItem[] = [
   { title: "Delivery", href: "/delivery", icon: Truck },
   { title: "Purchases", href: "/purchases", icon: PackagePlus },
   { title: "Inventory", href: "/inventory", icon: Boxes },
+  {
+    title: "Damage",
+    href: "/damage",
+    icon: PackageX,
+    permission: "operations.manage",
+    // No Alt+number: the sections after it keep the shortcuts people already know.
+    shortcut: false,
+  },
   { title: "Customers", href: "/customers", icon: Users },
   { title: "Companies", href: "/companies", icon: Building2 },
   { title: "Products", href: "/products", icon: Package },

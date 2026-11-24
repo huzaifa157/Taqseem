@@ -18,6 +18,7 @@ import { createCustomerPayment } from "../payments/customer-payments";
 import { createGoodsReceipt } from "../purchasing/goods-receipts";
 import { dailyReport } from "../reports/daily";
 import { productsSold, soldRange } from "../reports/products-sold";
+import { getBillView } from "./bills";
 import { createCounterSale, editCounterSale } from "./counter";
 import { listSalesOrders } from "./orders";
 import { customerPending, openOrdersTotal } from "./positions";
@@ -187,11 +188,28 @@ describe("counter sale", () => {
   });
 
   it("shows apart from deliveries on the daily report and the dashboard", async () => {
-    await createCounterSale(t.ctx, sale("2"));
+    // 2 dz × 224 = 448, less a special discount of 48 = 400; 150 paid at the counter.
+    await createCounterSale(t.ctx, sale("2", { specialDiscount: "48", paidAmount: "150" }));
     const date = new Date(`${DAY}T00:00:00.000Z`);
     const r = await dailyReport(t.ctx, date);
     expect(r.counter.sales).toBe(1);
-    expect(r.counter.billed.toFixed(2)).toBe("448.00");
+    expect(r.counter.billed.toFixed(2)).toBe("400.00");
+    // Each counter sale with what was paid and its profit (cost 2 dz × 100 = 200).
+    expect(
+      r.counter.list.map((o) => [
+        o.sales.toFixed(2),
+        o.paid.toFixed(2),
+        o.onAccount.toFixed(2),
+        o.cost?.toFixed(2),
+        o.profit?.toFixed(2),
+      ]),
+    ).toEqual([["400.00", "150.00", "250.00", "200.00", "200.00"]]);
+    // Profit split: all of it from the counter; sales after the special discount.
+    expect([r.profit?.counter.gross?.toFixed(2), r.profit?.delivery.sales.toFixed(2)]).toEqual([
+      "200.00",
+      "0.00",
+    ]);
+    expect(r.profit?.sales.toFixed(2)).toBe("400.00");
     expect(r.deliveries.orders).toBe(0);
     expect(r.soldTotals.quantity).toBe(24);
     const d = await getDashboard(t.ctx, { date });
@@ -287,6 +305,45 @@ describe("counter sale", () => {
     await expect(getDashboardCharts(booker, day.from)).rejects.toThrow(ForbiddenError);
     // But can sell at the counter.
     await createCounterSale(booker, sale("1"));
+  });
+
+  it("deducts damage the customer brought back from this bill", async () => {
+    // 5 dz × 224 = 1120; 6 packets of damaged chips at 224 a dozen = 112; the rest, 1008, paid.
+    const r = await createCounterSale(
+      t.ctx,
+      sale("5", {
+        damaged: [{ productId: t.chips.id, quantity: "6pk" }],
+        paidAmount: "1008",
+        method: "CASH",
+      }),
+    );
+    // Opening 4000 + bill 1120 − damage 112 − paid 1008: nothing more owed for this sale.
+    expect((await customerPending(t.ctx.db, t.customer.id)).total.toFixed(2)).toBe("4000.00");
+    const damage = await t.ctx.db.damageReturn.findFirstOrThrow({ where: { salesOrderId: r.id } });
+    expect(damage.damagedAmount.toFixed(2)).toBe("112.00");
+    const view = await getBillView(t.ctx, r.id);
+    expect([view.bill.netAmount.toFixed(2), view.damage.amount.toFixed(2)]).toEqual([
+      "1120.00",
+      "112.00",
+    ]);
+    expect(view.damage.numbers).toEqual([damage.number]);
+    // The sale's own figures stay the full bill; the damaged packets are in damaged stock.
+    const damaged = await t.ctx.db.stockMovement.aggregate({
+      where: { productId: t.chips.id, bucket: "DAMAGED" },
+      _sum: { quantity: true },
+    });
+    expect(damaged._sum.quantity).toBe(6);
+  });
+
+  it("deducts damage only for a customer already in the list", async () => {
+    await expect(
+      createCounterSale(t.ctx, {
+        newCustomerName: "Walk-in",
+        saleDate: DAY,
+        lines: [{ productId: t.chips.id, quantity: "1" }],
+        damaged: [{ productId: t.chips.id, quantity: "6pk" }],
+      }),
+    ).rejects.toThrow(/customer already in the list/);
   });
 
   it("is not allowed without operations access", async () => {
