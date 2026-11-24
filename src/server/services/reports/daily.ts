@@ -284,9 +284,10 @@ export async function dailyReport(ctx: ServiceCtx, date: Date) {
           sales: salesTotal,
           cost: costTotal,
           gross: salesTotal.sub(costTotal),
-          // Paid for companies comes back on their bills: not our cost.
-          expenses: money.expenses.total.sub(money.expenses.forCompanies),
-          net: salesTotal.sub(costTotal).sub(money.expenses.total.sub(money.expenses.forCompanies)),
+          // Paid for companies comes back on their bills: not our cost. Monthly costs count as
+          // the day's share.
+          expenses: money.expenses.forProfit,
+          net: salesTotal.sub(costTotal).sub(money.expenses.forProfit),
           delivery: deliveryTotals,
           counter: counterTotals,
         }
@@ -390,7 +391,7 @@ async function moneyFor(ctx: ServiceCtx, date: Date, next: Date) {
       _count: { _all: true },
     }),
     ctx.db.expense.groupBy({
-      by: ["categoryId", "method", "companyId"],
+      by: ["categoryId", "method", "companyId", "spreadOverMonth"],
       where: { expenseDate: date, status: "POSTED" },
       _sum: { amount: true },
     }),
@@ -443,6 +444,29 @@ async function moneyFor(ctx: ServiceCtx, date: Date, next: Date) {
     expenses.filter((e) => e.method === "CASH"),
     (e) => e._sum.amount,
   );
+  // Monthly costs paid at once (rent, salary): profit counts a share each day of their month.
+  const monthStart = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1));
+  const monthEnd = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0));
+  const daysInMonth = monthEnd.getUTCDate();
+  const monthly = await ctx.db.expense.aggregate({
+    where: {
+      spreadOverMonth: true,
+      status: "POSTED",
+      expenseDate: { gte: monthStart, lte: monthEnd },
+    },
+    _sum: { amount: true },
+  });
+  const monthlyTotal = monthly._sum.amount ?? ZERO;
+  const dailyShare = monthlyTotal.div(daysInMonth).toDecimalPlaces(2);
+  const spreadPaidToday = sum(
+    expenses.filter((e) => e.spreadOverMonth),
+    (e) => e._sum.amount,
+  );
+  const expenseTotal = sum(expenses, (e) => e._sum.amount);
+  const forCompanies = sum(
+    expenses.filter((e) => e.companyId),
+    (e) => e._sum.amount,
+  );
   const cashToCompanies = sum(
     companyPayments.filter((p) => p.method === "CASH"),
     (p) => p._sum.amount,
@@ -480,12 +504,16 @@ async function moneyFor(ctx: ServiceCtx, date: Date, next: Date) {
       byCategory: [...expenseByCategory]
         .map(([name, amount]) => ({ name, amount }))
         .sort((a, b) => b.amount.comparedTo(a.amount)),
-      total: sum(expenses, (e) => e._sum.amount),
+      total: expenseTotal,
       /** Of the total, paid for companies that pay it back (not our cost: left out of profit). */
-      forCompanies: sum(
-        expenses.filter((e) => e.companyId),
-        (e) => e._sum.amount,
-      ),
+      forCompanies,
+      /** Monthly costs (rent, salary) this month, and the share counted in each day's profit. */
+      monthly: { total: monthlyTotal, dailyShare, days: daysInMonth, paidToday: spreadPaidToday },
+      /**
+       * What the day's profit counts: our own expenses of the day, except monthly costs paid
+       * today, plus the day's share of this month's monthly costs.
+       */
+      forProfit: expenseTotal.sub(forCompanies).sub(spreadPaidToday).add(dailyShare),
     },
     companyPayments: sum(companyPayments, (p) => p._sum.amount),
     goodsReceived: receipts.map((r) => ({
@@ -656,8 +684,8 @@ function dayIssues(d: {
   if (negative.length)
     add(
       "problem",
-      `Stock below zero for ${names(negative.map((s) => s.code))}: a delivery or count was entered wrongly.`,
-      "/inventory",
+      `Stock below zero for ${names(negative.map((s) => s.code))}: sold before the purchase was entered. Enter the purchase (or check the count).`,
+      "/purchases/new",
     );
   if (d.money && d.money.cashInHand.net.lt(0))
     add(

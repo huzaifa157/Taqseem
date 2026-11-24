@@ -31,6 +31,9 @@ export default function ExpensesPage({ searchParams }: PageProps<"/expenses">) {
         description="Money spent: rent, salary, petrol and the rest, by category, bike and trip."
         actions={
           <div className="flex flex-wrap gap-2 print:hidden">
+            <LinkButton href="/expenses/repeating" variant="outline">
+              Repeating
+            </LinkButton>
             <LinkButton href="/expenses/categories" variant="outline">
               Categories
             </LinkButton>

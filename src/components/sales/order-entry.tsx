@@ -846,8 +846,15 @@ export function OrderEntry({
                       </GridTd>
                       <GridTd className="text-right whitespace-nowrap">
                         {short ? (
-                          <Badge variant="destructive">
-                            Short {formatDozens(qty! - product.available)}
+                          // Selling past the stock is allowed (a purchase entered late): stock goes
+                          // below zero until the goods receipt brings it back.
+                          <Badge
+                            variant="destructive"
+                            title="Not in stock: it can still be sold; stock goes below zero until the purchase is entered"
+                          >
+                            {product.available <= 0
+                              ? "Out of stock"
+                              : `Short ${formatDozens(qty! - product.available)}`}
                           </Badge>
                         ) : (
                           <StockPill packets={product.available} />
@@ -946,7 +953,9 @@ export function OrderEntry({
                                   : "text-muted-foreground"
                               }
                             >
-                              {formatDozens(p.available)} free
+                              {p.available <= 0
+                                ? "Out of stock"
+                                : `${formatDozens(p.available)} free`}
                             </span>
                           </span>
                         )}
@@ -1249,6 +1258,27 @@ export function OrderEntry({
           </div>
         ) : null}
 
+        {(() => {
+          // Lines past the stock: allowed, but said plainly (in red) before saving.
+          const beyond = lines.filter((l) => {
+            const product = productById.get(l.productId);
+            const qty = halfDozens(l.qty);
+            return product && qty !== null && qty > product.available;
+          });
+          return beyond.length ? (
+            <p role="status" className="text-destructive text-sm font-medium">
+              {beyond.length} {beyond.length === 1 ? "item is" : "items are"} not in stock (
+              {beyond
+                .map((l) => productById.get(l.productId)!.name)
+                .slice(0, 3)
+                .join(", ")}
+              {beyond.length > 3 ? " …" : ""}).{" "}
+              {counter
+                ? "It will still be sold: stock goes below zero until you enter the purchase."
+                : "It can still be booked and sent: stock goes below zero until you enter the purchase."}
+            </p>
+          ) : null;
+        })()}
         <FormMessage state={state} />
 
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">

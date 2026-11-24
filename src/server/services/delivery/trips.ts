@@ -20,12 +20,13 @@ import { PAGE_SIZE, paged, type ServiceCtx } from "../master/common";
 import { customerBalances } from "../master/opening-balances";
 import { found, nextDocumentNumber } from "../posting";
 import type { DateRange } from "../purchasing/filters";
-import { assertStockOnHand, postOrderBill, stockOut } from "../sales/post-bill";
+import { postOrderBill, shortageNotes, stockOut, stockShortages } from "../sales/post-bill";
 
 // Delivery trips (SPEC §7, Phase 1): staff put a day's booked orders on a bike with a driver (the
 // orders become Planned), print the loading sheet and bills, then dispatch. Dispatch, in one
 // transaction:
-//  - takes the stock out (oldest batches first) and refuses if the warehouse is short;
+//  - takes the stock out (oldest batches first), also past what is on hand (stock goes below
+//    zero until the purchase is entered; recorded in the audit);
 //  - posts each bill to the customer ledger, one entry per company slice, and freezes its
 //    "previous pending" (overall and per company) for printing;
 //  - marks the orders Dispatched.
@@ -226,9 +227,9 @@ export async function dispatchTrip(ctx: ServiceCtx, input: unknown) {
           `Order ${waiting.map((o) => `#${o.number}`).join(", ")} ${waiting.length === 1 ? "waits" : "wait"} for the owner to allow it past the credit limit. Approve or remove ${waiting.length === 1 ? "it" : "them"} first.`,
         );
 
-      // Enough stock on hand for the whole load?
+      // More than is on hand is allowed (a purchase not entered yet); it is noted in the audit.
       const allLines = orders.flatMap((o) => o.lines);
-      await assertStockOnHand(tx, trip.warehouseId, allLines);
+      const beyondStock = await stockShortages(tx, trip.warehouseId, allLines);
       const load = loadByProduct(allLines);
 
       // Claim the trip first, so a double click cannot dispatch it twice.
@@ -266,6 +267,7 @@ export async function dispatchTrip(ctx: ServiceCtx, input: unknown) {
           status: "DISPATCHED",
           orders: orders.map((o) => ({ id: o.id, number: o.number, bill: o.bill?.netAmount })),
           load: Object.fromEntries(load),
+          ...(beyondStock.length ? { sentBeyondStock: shortageNotes(beyondStock) } : {}),
         },
       });
       return { orders: orders.length };

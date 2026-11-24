@@ -1,6 +1,9 @@
 import { Suspense } from "react";
 
+import { RecurringExpensesRunner } from "@/components/expenses/recurring-expenses";
 import { AppSidebar } from "@/components/layout/app-sidebar";
+import { businessToday, toDateInput } from "@/lib/dates";
+import { postDueRecurringExpensesAction } from "@/server/expense-actions";
 import { requireTenantUser } from "@/server/auth/session";
 
 export default function AppLayout({ children }: LayoutProps<"/">) {
@@ -20,5 +23,14 @@ export default function AppLayout({ children }: LayoutProps<"/">) {
 /** Every page in the app requires a signed-in tenant user (redirects to login otherwise). */
 async function SessionGate({ children }: { children: React.ReactNode }) {
   await requireTenantUser();
-  return children;
+  return (
+    <>
+      {children}
+      {/* Once a day: the repeating daily expenses that are due (expense access only). */}
+      <RecurringExpensesRunner
+        run={postDueRecurringExpensesAction}
+        today={toDateInput(businessToday())}
+      />
+    </>
+  );
 }

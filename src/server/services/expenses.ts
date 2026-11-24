@@ -181,6 +181,8 @@ export async function createExpense(ctx: ServiceCtx, input: unknown) {
         paidTo:
           data.paidTo ?? (data.chargeTo === "BOOKER_SALARY" ? company!.orderBookerName : null),
         note: data.note,
+        // Only our own costs are spread (a company pays back what it owes on its bill).
+        spreadOverMonth: data.chargeTo === "OWN" && data.spreadOverMonth,
         requestId: data.requestId,
         createdById: ctx.user.id,
       },

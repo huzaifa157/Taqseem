@@ -61,6 +61,7 @@ export const TENANT_MODELS = [
   "LedgerEntry",
   "ExpenseCategory",
   "Expense",
+  "RecurringExpense",
 ] as const;
 
 const tenantModels = new Set<string>(TENANT_MODELS);

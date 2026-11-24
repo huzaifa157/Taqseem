@@ -24,6 +24,11 @@ import { cancelClaim } from "./purchasing/claims";
 import { getCompanyLedger } from "./purchasing/company-ledger";
 import { createGoodsReceipt } from "./purchasing/goods-receipts";
 import { dailyReport } from "./reports/daily";
+import {
+  createRecurringExpense,
+  postDueRecurringExpenses,
+  setRecurringExpenseActive,
+} from "./recurring-expenses";
 
 const D = (v: Prisma.Decimal | string | null | undefined) => new Prisma.Decimal(v ?? 0).toFixed(2);
 import type { ServiceCtx } from "./master/common";
@@ -215,5 +220,63 @@ describe("paid for a company", () => {
     expect(D(r.money!.expenses.forCompanies)).toBe("4000.00");
     expect(D(r.money!.cashInHand.expenses)).toBe("5000.00");
     expect(D(r.profit!.expenses)).toBe("1000.00");
+  });
+});
+
+describe("repeating daily expenses", () => {
+  it("are added by themselves for every day since the start, once each, until stopped", async () => {
+    const r = await createRecurringExpense(t.ctx, {
+      categoryId: t.petrol.id,
+      amount: "1000",
+      startDate: "2026-11-20",
+      note: "Bike petrol",
+    });
+    const count = () => t.ctx.db.expense.count({ where: { recurringExpenseId: r.id } });
+    // Today (the test day) is after the start: the missing days were added on creation.
+    const today = new Date("2026-11-23T00:00:00.000Z");
+    await postDueRecurringExpenses(t.ctx, today);
+    expect(await count()).toBeGreaterThanOrEqual(4);
+    const before = await count();
+    // Running again adds nothing; a cancelled day is not added back.
+    await postDueRecurringExpenses(t.ctx, today);
+    expect(await count()).toBe(before);
+    const one = await t.ctx.db.expense.findFirstOrThrow({ where: { recurringExpenseId: r.id } });
+    await reverseExpense(t.ctx, { id: one.id, reason: "No petrol that day" });
+    await postDueRecurringExpenses(t.ctx, today);
+    expect(await count()).toBe(before);
+    // Stopped: no new days.
+    await setRecurringExpenseActive(t.ctx, r.id, false);
+    await postDueRecurringExpenses(t.ctx, new Date("2026-11-30T00:00:00.000Z"));
+    expect(await count()).toBe(before);
+    await expect(
+      createRecurringExpense(t.as("STAFF"), {
+        categoryId: t.petrol.id,
+        amount: "1",
+        startDate: "2026-11-20",
+      }),
+    ).rejects.toThrow(ForbiddenError);
+  });
+});
+
+describe("monthly costs spread over the month", () => {
+  it("count a share in each day's profit, and the full amount in cash out on the day paid", async () => {
+    // Rent 31,000 paid on 1 Oct (31 days): 1,000 a day in profit.
+    await add({
+      categoryId: t.rent.id,
+      amount: "31000",
+      expenseDate: "2026-10-01",
+      spreadOverMonth: "on",
+    });
+    const day1 = await dailyReport(t.ctx, new Date("2026-10-01T00:00:00.000Z"));
+    const day2 = await dailyReport(t.ctx, new Date("2026-10-02T00:00:00.000Z"));
+    expect(D(day1.money!.expenses.monthly.dailyShare)).toBe("1000.00");
+    expect([D(day1.money!.expenses.total), D(day1.money!.cashInHand.expenses)]).toEqual([
+      "31000.00",
+      "31000.00",
+    ]);
+    // Profit counts 1,000 on both days, not 31,000 on the 1st.
+    expect(D(day1.money!.expenses.forProfit)).toBe("1000.00");
+    expect(D(day2.money!.expenses.forProfit)).toBe("1000.00");
+    expect(D(day2.money!.expenses.total)).toBe("0.00");
   });
 });

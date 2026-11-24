@@ -5,6 +5,7 @@ import { LoadText, TripStatusBadge } from "@/components/delivery/trip-badge";
 import { TripDriverForm } from "@/components/delivery/trip-driver-form";
 import { AddOrdersForm } from "@/components/delivery/trip-form";
 import { ConfirmAction } from "@/components/form/confirm-action";
+import { ReasonAction } from "@/components/form/reason-action";
 import { BackLink, PageHeader } from "@/components/layout/page-header";
 import { DataTable, EmptyRow, Td, Th } from "@/components/list/data-table";
 import { Notice } from "@/components/master/notice";
@@ -18,6 +19,7 @@ import { requireTenantContext } from "@/server/auth/session";
 import {
   addOrdersToTripAction,
   cancelTripAction,
+  changeTripDateAction,
   dispatchTripAction,
   removeOrderFromTripAction,
   setTripDriverAction,
@@ -146,6 +148,16 @@ export default async function TripPage({ params, searchParams }: PageProps<"/del
             confirm={`Cancel trip #${trip.number}? Its orders go back to booked.`}
           />
         </div>
+      ) : null}
+
+      {trip.status !== "CANCELLED" && can(ctx.user.role, "documents.reverse") ? (
+        <ReasonAction
+          action={changeTripDateAction.bind(null, id)}
+          label="Change date"
+          destructive={false}
+          date={{ label: "Right date", defaultValue: toDateInput(trip.tripDate) }}
+          description="Entered for the wrong day? The trip, its orders, bills, payments collected, returns, damage claims and petrol move to this date, also after dispatch and day-end. Each day's report follows."
+        />
       ) : null}
 
       <section aria-labelledby="stops-heading">

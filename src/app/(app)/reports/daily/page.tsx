@@ -658,6 +658,21 @@ function Money({
               </dd>
             </dl>
           )}
+          {money.expenses.monthly.total.gt(0) ? (
+            <p className="text-[0.9em]">
+              Monthly costs (rent, salary …) this month{" "}
+              <span className="tabular-nums">{formatMoney(money.expenses.monthly.total)}</span>:
+              profit counts{" "}
+              <strong className="tabular-nums">
+                {formatMoney(money.expenses.monthly.dailyShare)}
+              </strong>{" "}
+              a day (÷ {money.expenses.monthly.days})
+              {money.expenses.monthly.paidToday.gt(0)
+                ? `; ${formatMoney(money.expenses.monthly.paidToday)} of it paid today (in cash out, not in today's profit)`
+                : ""}
+              .
+            </p>
+          ) : null}
           <p>
             Paid to companies:{" "}
             <strong className="tabular-nums">{formatMoney(money.companyPayments)}</strong>

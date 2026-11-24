@@ -25,13 +25,14 @@ import {
 } from "./orders";
 import { postDamageReturn, priceDamage } from "../damage";
 import { customerPending, openOrdersTotal } from "./positions";
-import { assertStockOnHand, postOrderBill, stockOut } from "./post-bill";
+import { postOrderBill, shortageNotes, stockOut, stockShortages } from "./post-bill";
 
 // Counter sales: a customer (always a real customer record) collects the goods at the warehouse.
 // One transaction does what booking, dispatch and day-end do for a delivery:
 //  - books the order and its bill (same pricing, discounts and credit check as an order; going
 //    past the credit limit needs the owner, since there is no later approval step);
-//  - takes the stock out (refused if the warehouse is short) and posts the bill to the customer
+//  - takes the stock out (allowed past what is on hand: stock goes below zero until the
+//    purchase is entered; recorded in the audit) and posts the bill to the customer
 //    ledger, one entry per company;
 //  - records what was paid at the counter as a customer payment (oldest debt first, like money
 //    collected on delivery); the rest stays on the customer's account;
@@ -88,7 +89,7 @@ export async function createCounterSale(ctx: ServiceCtx, input: unknown) {
         netAmount: D(l.netAmount.toString()),
         product: { name: names.get(l.productId)! },
       }));
-      await assertStockOnHand(tx, warehouseId, saleLines);
+      const beyondStock = await stockShortages(tx, warehouseId, saleLines);
       const batchLeft = new Map<string, { id: string; available: number }[]>();
       for (const l of saleLines)
         await stockOut(
@@ -139,6 +140,7 @@ export async function createCounterSale(ctx: ServiceCtx, input: unknown) {
           damage: damageEntry
             ? { number: damageEntry.number, amount: damageEntry.damagedAmount }
             : null,
+          ...(beyondStock.length ? { soldBeyondStock: shortageNotes(beyondStock) } : {}),
         },
         requestId: data.requestId,
       });
@@ -338,7 +340,7 @@ export async function editCounterSale(ctx: ServiceCtx, id: string, input: unknow
         netAmount: D(l.netAmount.toString()),
         product: { name: names.get(l.productId)! },
       }));
-      await assertStockOnHand(tx, before.warehouseId, saleLines);
+      const beyondStock = await stockShortages(tx, before.warehouseId, saleLines);
       const batchLeft = new Map<string, { id: string; available: number }[]>();
       for (const l of saleLines)
         await stockOut(
@@ -442,6 +444,7 @@ export async function editCounterSale(ctx: ServiceCtx, id: string, input: unknow
             ...(l.customerDiscount ? { customerDiscount: l.discountValue } : {}),
           })),
           bill: netAmount,
+          ...(beyondStock.length ? { soldBeyondStock: shortageNotes(beyondStock) } : {}),
           paid: keepPayment
             ? "unchanged"
             : payment

@@ -5,7 +5,6 @@ import { loadByProduct, takeFromBatches } from "@/lib/delivery";
 import { formatDozens } from "@/lib/units";
 
 import type { TenantTx } from "../../db/tenant";
-import { ServiceError } from "../errors";
 import type { ServiceCtx } from "../master/common";
 import { batchBalances } from "../posting";
 import { customerPending } from "./positions";
@@ -15,12 +14,18 @@ import { customerPending } from "./positions";
 
 const D = (v: Prisma.Decimal | number | string) => new Prisma.Decimal(v);
 
-/** Refuses when the warehouse has less saleable stock on hand than these lines take. */
-export async function assertStockOnHand(
+export type StockShortage = { productId: string; name: string; needed: number; onHand: number };
+
+/**
+ * What these lines take beyond the saleable stock on hand. Selling past it is allowed (purchases
+ * are sometimes entered late): stock goes below zero until the goods receipt brings it back. The
+ * shortages are recorded in the sale's audit entry and shown in red on screen.
+ */
+export async function stockShortages(
   tx: TenantTx,
   warehouseId: string,
   lines: { productId: string; quantity: number; product: { name: string } }[],
-) {
+): Promise<StockShortage[]> {
   const load = loadByProduct(lines);
   const onHand = await tx.stockMovement.groupBy({
     by: ["productId"],
@@ -29,14 +34,21 @@ export async function assertStockOnHand(
   });
   const have = new Map(onHand.map((g) => [g.productId, g._sum.quantity ?? 0]));
   const names = new Map(lines.map((l) => [l.productId, l.product.name]));
-  const short = [...load]
+  return [...load]
     .filter(([pid, qty]) => qty > (have.get(pid) ?? 0))
-    .map(
-      ([pid, qty]) =>
-        `${names.get(pid)} (needs ${formatDozens(qty)}, ${formatDozens(Math.max(have.get(pid) ?? 0, 0))} on hand)`,
-    );
-  if (short.length > 0) throw new ServiceError(`Not enough stock: ${short.join("; ")}.`);
+    .map(([pid, qty]) => ({
+      productId: pid,
+      name: names.get(pid)!,
+      needed: qty,
+      onHand: have.get(pid) ?? 0,
+    }));
 }
+
+/** For an audit entry: "Chips: needed 5 dz, 2 dz on hand". */
+export const shortageNotes = (short: StockShortage[]) =>
+  short.map(
+    (s) => `${s.name}: needed ${formatDozens(s.needed)}, ${formatDozens(s.onHand)} on hand`,
+  );
 
 /** Saleable stock movements out of the warehouse for one line, oldest batches first. */
 export async function stockOut(

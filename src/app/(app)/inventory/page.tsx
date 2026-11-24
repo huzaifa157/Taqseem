@@ -10,6 +10,7 @@ import { LinkButton } from "@/components/master/page-helpers";
 import { Badge } from "@/components/ui/badge";
 import { filterParam, listParamsSchema } from "@/lib/list-params";
 import { formatDozens } from "@/lib/units";
+import { cn } from "@/lib/utils";
 import { can } from "@/server/auth/permissions";
 import { requireTenantContext } from "@/server/auth/session";
 import { listStock } from "@/server/services/inventory";
@@ -142,12 +143,29 @@ export default async function InventoryPage({ searchParams }: PageProps<"/invent
                 {r.companyName}
                 <div className="text-muted-foreground">{r.warehouseName}</div>
               </Td>
-              <Td className="text-right tabular-nums">{formatDozens(r.onHand)}</Td>
+              <Td
+                className={cn(
+                  "text-right tabular-nums",
+                  r.onHand < 0 && "text-destructive font-semibold",
+                )}
+              >
+                {formatDozens(r.onHand)}
+              </Td>
               <Td className="text-right tabular-nums">
                 {r.reserved ? formatDozens(r.reserved) : ""}
               </Td>
-              <Td className="text-right font-medium tabular-nums">
+              <Td
+                className={cn(
+                  "text-right font-medium tabular-nums",
+                  r.available < 0 && "text-destructive",
+                )}
+              >
                 {formatDozens(r.available)}
+                {r.onHand < 0 ? (
+                  <Badge variant="destructive" className="ml-2">
+                    Below zero
+                  </Badge>
+                ) : null}
                 {r.low ? (
                   <Badge variant="destructive" className="ml-2">
                     Low

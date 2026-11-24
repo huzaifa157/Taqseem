@@ -34,6 +34,10 @@ export const expenseSchema = z
     staffId: optionalId,
     paidTo: optionalText(120),
     note: optionalText(300),
+    /** A monthly cost paid at once (rent, salary): daily profit counts a share each day. */
+    spreadOverMonth: z
+      .preprocess((v) => v === true || v === "true" || v === "on", z.boolean())
+      .default(false),
   })
   .superRefine((e, ctx) => {
     if (e.chargeTo !== "OWN" && !e.companyId)

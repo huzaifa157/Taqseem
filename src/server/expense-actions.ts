@@ -13,6 +13,12 @@ import {
   reverseExpense,
   setExpenseCategoryActive,
 } from "./services/expenses";
+import {
+  createRecurringExpense,
+  postDueRecurringExpenses,
+  setRecurringExpenseActive,
+} from "./services/recurring-expenses";
+import { ForbiddenError } from "./auth/permissions";
 
 // Server actions for expenses. The services check permissions, validate and audit.
 
@@ -78,4 +84,45 @@ export async function setExpenseCategoryActiveAction(
   });
   if (result.status === "success") revalidatePath("/expenses");
   return result;
+}
+
+// ───────────────────────── Repeating daily expenses ─────────────────────────
+
+export async function saveRecurringExpenseAction(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const result = await runAction<undefined>(async () => {
+    const ctx = await requireTenantContext("expenses.manage");
+    await createRecurringExpense(ctx, fields(formData));
+    return { message: "Added. It is entered by itself every day from the start date." };
+  }, formData);
+  if (result.status === "success") {
+    revalidatePath("/expenses/repeating");
+    revalidatePath("/expenses");
+  }
+  return result;
+}
+
+export async function setRecurringActiveAction(id: string, active: boolean): Promise<ActionState> {
+  const result = await runAction<undefined>(async () => {
+    const ctx = await requireTenantContext("expenses.manage");
+    await setRecurringExpenseActive(ctx, id, active);
+  });
+  if (result.status === "success") revalidatePath("/expenses/repeating");
+  return result;
+}
+
+/**
+ * Adds today's (and any missed) repeating expenses; run once a day by the app for whoever has
+ * expense access. Quietly does nothing for others.
+ */
+export async function postDueRecurringExpensesAction(): Promise<number> {
+  try {
+    const ctx = await requireTenantContext("expenses.manage");
+    return await postDueRecurringExpenses(ctx);
+  } catch (error) {
+    if (error instanceof ForbiddenError) return 0;
+    throw error;
+  }
 }

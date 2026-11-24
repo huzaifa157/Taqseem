@@ -39,6 +39,27 @@ const ZERO = D(0);
 type SnapshotLine = { productId: string; companyId: string; quantity: number; netAmount: string };
 
 const inRange = (d: Date, r: PeriodRange) => d >= r.from && d <= r.to;
+
+const DAY = 86_400_000;
+/**
+ * What of an expense falls in a period: all of it on its day, or, for a monthly cost spread over
+ * its month (rent, salary), its share for the days of the period that are in that month.
+ */
+function expenseIn(
+  e: { expenseDate: Date; amount: Prisma.Decimal; spreadOverMonth: boolean },
+  r: PeriodRange,
+) {
+  if (!e.spreadOverMonth) return inRange(e.expenseDate, r) ? e.amount : ZERO;
+  const y = e.expenseDate.getUTCFullYear();
+  const m = e.expenseDate.getUTCMonth();
+  const start = Date.UTC(y, m, 1);
+  const end = Date.UTC(y, m + 1, 0);
+  const days = Math.round((end - start) / DAY) + 1;
+  const from = Math.max(start, r.from.getTime());
+  const to = Math.min(end, r.to.getTime());
+  if (to < from) return ZERO;
+  return e.amount.mul(Math.round((to - from) / DAY) + 1).div(days);
+}
 const dateWhere = (r: { from: Date; to: Date }) => ({ gte: r.from, lte: r.to });
 
 /** A figure this period and the period before, with the change in %. */
@@ -82,9 +103,17 @@ export async function businessAnalysis(ctx: ServiceCtx, kind: PeriodKind, date: 
     ctx.db.company.findMany({ select: { id: true, name: true } }),
     showCost
       ? ctx.db.expense.findMany({
-          // Our own: expenses paid for a company come back on its bill.
-          where: { status: "POSTED", expenseDate: dateWhere(span), companyId: null },
-          select: { expenseDate: true, amount: true },
+          // Our own: expenses paid for a company come back on its bill. From the start of the
+          // first month, for monthly costs spread over their month.
+          where: {
+            status: "POSTED",
+            expenseDate: dateWhere({
+              from: new Date(Date.UTC(span.from.getUTCFullYear(), span.from.getUTCMonth(), 1)),
+              to: span.to,
+            }),
+            companyId: null,
+          },
+          select: { expenseDate: true, amount: true, spreadOverMonth: true },
         })
       : Promise.resolve([]),
     // Sent, returned and damaged, for return rates.
@@ -125,9 +154,7 @@ export async function businessAnalysis(ctx: ServiceCtx, kind: PeriodKind, date: 
     const cost = showCost
       ? inBucket.flatMap(linesOf).reduce((s, l) => s.add(costOf(l.productId, l.quantity)), ZERO)
       : null;
-    const spent = expenses
-      .filter((e) => inRange(e.expenseDate, r))
-      .reduce((s, e) => s.add(e.amount), ZERO);
+    const spent = expenses.reduce((s, e) => s.add(expenseIn(e, r)), ZERO);
     return {
       label: periodLabel(kind, r),
       from: r.from,

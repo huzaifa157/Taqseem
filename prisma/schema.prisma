@@ -312,6 +312,7 @@ model Tenant {
   paymentAllocations   PaymentAllocation[]
   expenseCategories    ExpenseCategory[]
   expenses             Expense[]
+  recurringExpenses    RecurringExpense[]
   ledgerEntries        LedgerEntry[]
   customerReturns      CustomerReturn[]
   damageReturns        DamageReturn[]
@@ -1042,52 +1043,86 @@ model ExpenseCategory {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  expenses Expense[]
+  tenant    Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  expenses  Expense[]
+  recurring RecurringExpense[]
 
   @@unique([tenantId, id])
   @@unique([tenantId, name])
 }
 
 /// Money spent by the business. Posted ones are never edited; a mistake is reversed with a reason.
-model Expense {
-  id             String        @id @default(cuid())
-  tenantId       String
-  number         Int
-  expenseDate    DateTime      @db.Date
-  categoryId     String
-  amount         Decimal       @db.Decimal(14, 2)
-  method         PaymentMethod @default(CASH)
-  /// Optional links for reports: petrol per bike and trip, salary per staff member.
-  warehouseId    String?
-  bikeId         String?
-  tripId         String?
-  staffId        String?
-  /// Paid for this company, which pays it back (its CompanyClaim); not our own cost.
-  companyId      String?
-  /// Who was paid (shop, landlord, …), or the cheque / transfer reference.
-  paidTo         String?
-  note           String?
-  status         PostingStatus @default(POSTED)
-  reversedAt     DateTime?
-  reversalReason String?
-  requestId      String?
-  createdById    String?
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+/// An expense added by itself every day (lunch, petrol, a daily wage), from `startDate` while
+/// active. Each day's entry is a normal Expense (it can be cancelled on its own).
+model RecurringExpense {
+  id          String        @id @default(cuid())
+  tenantId    String
+  categoryId  String
+  /// Per day.
+  amount      Decimal       @db.Decimal(14, 2)
+  method      PaymentMethod @default(CASH)
+  paidTo      String?
+  note        String?
+  startDate   DateTime      @db.Date
+  isActive    Boolean       @default(true)
+  createdById String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
 
-  tenant    Tenant          @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  category  ExpenseCategory @relation(fields: [tenantId, categoryId], references: [tenantId, id], onDelete: Restrict)
-  warehouse Warehouse?      @relation(fields: [tenantId, warehouseId], references: [tenantId, id], onDelete: Restrict)
-  bike      Bike?           @relation(fields: [tenantId, bikeId], references: [tenantId, id], onDelete: Restrict)
-  trip      DeliveryTrip?   @relation(fields: [tenantId, tripId], references: [tenantId, id], onDelete: Restrict)
-  staff     Staff?          @relation(fields: [tenantId, staffId], references: [tenantId, id], onDelete: Restrict)
-  company   Company?        @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict)
+  tenant   Tenant          @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  category ExpenseCategory @relation(fields: [tenantId, categoryId], references: [tenantId, id], onDelete: Restrict)
+  expenses Expense[]
+
+  @@unique([tenantId, id])
+  @@index([tenantId, isActive])
+}
+
+model Expense {
+  id                 String        @id @default(cuid())
+  tenantId           String
+  number             Int
+  expenseDate        DateTime      @db.Date
+  categoryId         String
+  amount             Decimal       @db.Decimal(14, 2)
+  method             PaymentMethod @default(CASH)
+  /// Optional links for reports: petrol per bike and trip, salary per staff member.
+  warehouseId        String?
+  bikeId             String?
+  tripId             String?
+  staffId            String?
+  /// Paid for this company, which pays it back (its CompanyClaim); not our own cost.
+  companyId          String?
+  /// Who was paid (shop, landlord, …), or the cheque / transfer reference.
+  paidTo             String?
+  note               String?
+  /// A monthly cost paid at once (rent, salary): daily profit counts a share of it each day of
+  /// its month; cash in hand counts it on the day paid.
+  spreadOverMonth    Boolean       @default(false)
+  /// Added by itself each day from this repeating expense (lunch, petrol).
+  recurringExpenseId String?
+  status             PostingStatus @default(POSTED)
+  reversedAt         DateTime?
+  reversalReason     String?
+  requestId          String?
+  createdById        String?
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  tenant    Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  category  ExpenseCategory   @relation(fields: [tenantId, categoryId], references: [tenantId, id], onDelete: Restrict)
+  warehouse Warehouse?        @relation(fields: [tenantId, warehouseId], references: [tenantId, id], onDelete: Restrict)
+  bike      Bike?             @relation(fields: [tenantId, bikeId], references: [tenantId, id], onDelete: Restrict)
+  trip      DeliveryTrip?     @relation(fields: [tenantId, tripId], references: [tenantId, id], onDelete: Restrict)
+  staff     Staff?            @relation(fields: [tenantId, staffId], references: [tenantId, id], onDelete: Restrict)
+  company   Company?          @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict)
+  recurring RecurringExpense? @relation(fields: [tenantId, recurringExpenseId], references: [tenantId, id], onDelete: Restrict)
   claim     CompanyClaim?
 
   @@unique([tenantId, id])
   @@unique([tenantId, number])
   @@unique([tenantId, requestId])
+  /// One entry per repeating expense per day (also a cancelled one: it is not added again).
+  @@unique([tenantId, recurringExpenseId, expenseDate])
   @@index([tenantId, expenseDate])
   @@index([tenantId, categoryId, expenseDate])
   @@index([tenantId, companyId])

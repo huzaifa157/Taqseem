@@ -34,6 +34,7 @@ import {
   undoDayEnd,
 } from "./day-end";
 import { extraReturnOptions } from "./extra-returns";
+import { changeTripDate } from "./trip-date";
 import {
   addOrdersToTrip,
   bookedOrdersFor,
@@ -285,13 +286,17 @@ describe("dispatch", () => {
     );
   });
 
-  it("refuses to dispatch when stock is short or an order waits for credit approval", async () => {
+  it("dispatches past the stock on hand (stock below zero), but not an order waiting for approval", async () => {
     const big = await book(t.ali.id, [[t.chips.id, "60"]]);
     const tr = await trip([big.id]);
-    await expect(dispatchTrip(t.staff, { id: tr.id })).rejects.toThrow(
-      /Not enough stock.*Item CB01/,
-    );
-    expect(await onHand(t.chips.id)).toBe(600);
+    await dispatchTrip(t.staff, { id: tr.id });
+    expect(await onHand(t.chips.id)).toBe(-120);
+    const audit = await t.ctx.db.auditLog.findFirstOrThrow({
+      where: { entityId: tr.id, action: "POST" },
+    });
+    expect(audit.newValue).toMatchObject({
+      sentBeyondStock: ["Item CB01: needed 60 dz, 50 dz on hand"],
+    });
 
     await t.ctx.db.customer.update({ where: { id: t.bilal.id }, data: { creditLimit: 100 } });
     const over = await book(t.bilal.id, [[t.nimko.id, "2"]]);
@@ -1108,5 +1113,62 @@ describe("special discount on the whole bill", () => {
 
     await undoDayEnd(t.ctx, { id: a.id, reason: "wrong order" });
     expect(await pending()).toBe("2304.00");
+  });
+});
+
+describe("correcting a trip's date", () => {
+  it("moves the trip, its bills, payments and stock to the right day, also after day-end", async () => {
+    // Booked and sent for the 25th by mistake; it went on the 24th.
+    const a = await book(t.ali.id, [[t.chips.id, "10"]]);
+    const tr = await trip([a.id]);
+    await dispatchTrip(t.staff, { id: tr.id });
+    await saveDayEnd(t.staff, {
+      orderId: a.id,
+      lines: [{ productId: t.chips.id, returned: "1", damaged: "6pk" }],
+      cash: "500",
+    });
+    const owesBefore = (await customerPending(t.ctx.db, t.ali.id)).total.toFixed(2);
+    const stockBefore = await onHand(t.chips.id);
+
+    await expect(
+      changeTripDate(t.staff, { id: tr.id, date: "2026-10-24", reason: "wrong day" }),
+    ).rejects.toThrow(ForbiddenError);
+    await changeTripDate(t.ctx, { id: tr.id, date: "2026-10-24", reason: "wrong day" });
+
+    const day24 = new Date("2026-10-24T00:00:00.000Z");
+    const day25 = new Date("2026-10-25T00:00:00.000Z");
+    // Nothing owed or held changes, only the day it happened.
+    expect((await customerPending(t.ctx.db, t.ali.id)).total.toFixed(2)).toBe(owesBefore);
+    expect(await onHand(t.chips.id)).toBe(stockBefore);
+    const order = await t.ctx.db.salesOrder.findUniqueOrThrow({
+      where: { id: a.id },
+      include: { bill: true, payments: true, trip: true },
+    });
+    expect([order.deliveryDate, order.bill!.billDate, order.trip!.tripDate]).toEqual([
+      day24,
+      day24,
+      day24,
+    ]);
+    expect(order.payments.map((p) => p.paymentDate)).toEqual([day24]);
+    // On the 25th the ledger nets to nothing; the bill and payment are on the 24th.
+    const net = async (entryDate: Date) =>
+      sum(
+        await t.ctx.db.ledgerEntry.findMany({
+          // The opening balance is dated "today" (the 25th) in this test; leave it out.
+          where: { customerId: t.ali.id, entryDate, type: { not: "OPENING_BALANCE" } },
+        }),
+      );
+    expect(await net(day25)).toBe(0);
+    const stock25 = await t.ctx.db.stockMovement.aggregate({
+      where: { productId: t.chips.id, occurredAt: day25 },
+      _sum: { quantity: true },
+    });
+    expect(stock25._sum.quantity ?? 0).toBe(0);
+    // The daily reports follow.
+    expect((await dailyReport(t.ctx, day24)).deliveries.orders).toBe(1);
+    expect((await dailyReport(t.ctx, day25)).deliveries.orders).toBe(0);
+    await expect(
+      changeTripDate(t.ctx, { id: tr.id, date: "2026-10-24", reason: "again" }),
+    ).rejects.toThrow(/already on that date/);
   });
 });

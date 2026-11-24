@@ -20,12 +20,12 @@ import { found, nextDocumentNumber, reverseLedgerFor } from "./posting";
 import type { DateRange } from "./purchasing/filters";
 import { logClaim } from "./purchasing/claims";
 import { savedDiscounts } from "./sales/customer-discounts";
-import { assertStockOnHand, stockOut } from "./sales/post-bill";
+import { shortageNotes, stockOut, stockShortages, type StockShortage } from "./sales/post-bill";
 
 // Customer damage (the Damage screen): a customer brings back damaged goods and gets other goods
 // in exchange, a credit on their account, or both. In one transaction:
 //  - the damaged goods go into DAMAGED stock (product's warehouse); replacements leave saleable
-//    stock (refused when the warehouse is short);
+//    stock (also past what is on hand, like a sale; noted in the audit);
 //  - the customer's account changes by damaged value − replacement value: a credit when positive
 //    (it comes off their next bill), a charge when the replacement is worth more;
 //  - each damaged line's company gets a claim at the purchase rate, AWAITING settlement with the
@@ -187,7 +187,7 @@ export async function postDamageReturn(
   });
   const label = `damage #${entry.number}`;
 
-  // Stock: damaged goods into DAMAGED; replacements out of saleable (refused when short).
+  // Stock: damaged goods into DAMAGED; replacements out of saleable (also past what is on hand).
   for (const l of damaged) {
     await tx.stockMovement.create({
       data: {
@@ -211,15 +211,18 @@ export async function postDamageReturn(
       ...(byWarehouse.get(l.product.company.warehouseId) ?? []),
       l,
     ]);
+  const beyondStock: StockShortage[] = [];
   for (const [warehouseId, ls] of byWarehouse) {
-    await assertStockOnHand(
-      tx,
-      warehouseId,
-      ls.map((l) => ({
-        productId: l.product.id,
-        quantity: l.quantity,
-        product: { name: l.product.name },
-      })),
+    beyondStock.push(
+      ...(await stockShortages(
+        tx,
+        warehouseId,
+        ls.map((l) => ({
+          productId: l.product.id,
+          quantity: l.quantity,
+          product: { name: l.product.name },
+        })),
+      )),
     );
     const batchLeft = new Map<string, { id: string; available: number }[]>();
     for (const l of ls)
@@ -301,6 +304,7 @@ export async function postDamageReturn(
       damagedAmount,
       replacementAmount,
       account: net,
+      ...(beyondStock.length ? { givenBeyondStock: shortageNotes(beyondStock) } : {}),
     },
     requestId: data.requestId,
   });

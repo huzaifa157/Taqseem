@@ -20,6 +20,7 @@ import {
   removeOrderFromTrip,
   setTripDriver,
 } from "./services/delivery/trips";
+import { changeTripDate } from "./services/delivery/trip-date";
 
 // Server actions for delivery trips and day-end entry. The services check permissions, validate,
 // post to the journals and audit.
@@ -82,6 +83,30 @@ export async function cancelTripAction(id: string): Promise<ActionState> {
   if (result.status !== "success") return result;
   revalidatePath("/delivery");
   redirect(`/delivery/${id}?notice=trip-cancelled`);
+}
+
+/** Moves a trip (and everything it recorded) to the right date; see changeTripDate. */
+export async function changeTripDateAction(
+  id: string,
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const result = await runAction<undefined>(async () => {
+    const ctx = await requireTenantContext("documents.reverse");
+    const r = await changeTripDate(ctx, {
+      id,
+      date: formData.get("date"),
+      reason: formData.get("reason"),
+    });
+    return {
+      message: `Date changed. ${r.orders} order(s), their bills, payments and stock moved.`,
+    };
+  }, formData);
+  if (result.status === "success") {
+    revalidatePath(`/delivery/${id}`);
+    revalidatePath("/delivery");
+  }
+  return result;
 }
 
 export async function dispatchTripAction(id: string): Promise<ActionState> {

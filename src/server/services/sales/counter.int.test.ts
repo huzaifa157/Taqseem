@@ -143,13 +143,22 @@ describe("counter sale", () => {
     expect(audit).toBe(1);
   });
 
-  it("refuses when the warehouse is short, and posts nothing", async () => {
-    await expect(createCounterSale(t.ctx, sale("31", { allowOverCredit: "true" }))).rejects.toThrow(
-      /Not enough stock.*Chips/,
-    );
-    expect(await t.ctx.db.salesOrder.count()).toBe(0);
-    expect(await t.ctx.db.ledgerEntry.count({ where: { type: "SALES_BILL" } })).toBe(0);
-    expect(await onHand()).toBe(30 * 12);
+  it("sells past the stock on hand (a purchase entered late): stock goes below zero, noted", async () => {
+    const r = await createCounterSale(t.ctx, sale("31", { allowOverCredit: "true" }));
+    expect(await onHand()).toBe(-12);
+    const audit = await t.ctx.db.auditLog.findFirstOrThrow({
+      where: { entityId: r.id, action: "POST" },
+    });
+    expect(audit.newValue).toMatchObject({
+      soldBeyondStock: ["Chips: needed 31 dz, 30 dz on hand"],
+    });
+    // The late purchase brings it back.
+    await createGoodsReceipt(t.ctx, {
+      companyId: t.crunchy.id,
+      receivedDate: DAY,
+      lines: [{ productId: t.chips.id, quantity: "5" }],
+    });
+    expect(await onHand()).toBe(48);
   });
 
   it("goes on credit up to the limit; past it only the owner may allow it", async () => {
@@ -408,15 +417,13 @@ describe("counter sale", () => {
       expect(await onHand()).toBe(26 * 12);
     });
 
-    it("can take stock that the sale itself had taken, but refuses more than the warehouse has", async () => {
+    it("can take stock that the sale itself had taken, and more (stock below zero)", async () => {
       const r = await createCounterSale(t.ctx, sale("25", { paidAmount: "5600" }));
       // 30 dz in all: 25 sold, so 30 is still possible when correcting the same sale.
       await editCounterSale(t.ctx, r.id, sale("30", { paidAmount: "6720" }));
       expect(await onHand()).toBe(0);
-      await expect(
-        editCounterSale(t.ctx, r.id, sale("31", { paidAmount: "6944" })),
-      ).rejects.toThrow(/Not enough stock/);
-      expect(await onHand()).toBe(0);
+      await editCounterSale(t.ctx, r.id, sale("31", { paidAmount: "6944" }));
+      expect(await onHand()).toBe(-12);
     });
 
     it("refuses another customer, an order that is not a counter sale, and a later payment that no longer fits", async () => {

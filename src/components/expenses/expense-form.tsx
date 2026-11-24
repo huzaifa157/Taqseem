@@ -168,6 +168,15 @@ export function ExpenseForm({
           maxLength={300}
           className="sm:col-span-2"
         />
+        {chargeTo === "OWN" ? (
+          <label className="flex items-start gap-2 text-sm sm:col-span-4">
+            <input type="checkbox" name="spreadOverMonth" className="mt-1" />
+            <span>
+              <span className="font-medium">Monthly cost</span> (rent, salary …): daily profit
+              counts its share each day of this month; cash in hand counts it today.
+            </span>
+          </label>
+        ) : null}
       </div>
       <fieldset className="space-y-2">
         <legend className="text-sm font-medium">

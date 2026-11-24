@@ -139,14 +139,18 @@ describe("customer damage", () => {
     ]);
   });
 
-  it("refuses a replacement the warehouse does not have", async () => {
-    await expect(
-      damage({
-        damaged: [{ productId: t.chips.id, quantity: "1" }],
-        replacements: [{ productId: t.nimko.id, quantity: "5" }],
-      }),
-    ).rejects.toThrow(/Not enough stock/);
-    expect(await t.ctx.db.damageReturn.count()).toBe(0);
+  it("gives a replacement past the stock on hand (stock below zero), noted in the audit", async () => {
+    const e = await damage({
+      damaged: [{ productId: t.chips.id, quantity: "1" }],
+      replacements: [{ productId: t.nimko.id, quantity: "5" }],
+    });
+    expect(await stock(t.nimko.id, "SALEABLE")).toBe(-36);
+    const audit = await t.ctx.db.auditLog.findFirstOrThrow({
+      where: { entityId: e.id, action: "POST" },
+    });
+    expect(audit.newValue).toMatchObject({
+      givenBeyondStock: ["Nimko: needed 5 dz, 2 dz on hand"],
+    });
   });
 
   it("is cancelled by reversal, not once the damaged stock went back to the company", async () => {

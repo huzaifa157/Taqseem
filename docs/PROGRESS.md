@@ -2,6 +2,33 @@
 
 Running log of what has been built, decisions taken, and open items. Newest first.
 
+## Trip date correction, repeating and monthly expenses, selling past stock — done
+
+- **Change a trip's date** (trip page, documents.reverse; `services/delivery/trip-date.ts`):
+  also after dispatch and day-end. The trip, its orders' delivery date, bills, payments
+  collected, returns of earlier goods, damage claims and the trip's expenses move to the right
+  day; every ledger entry and stock movement dated on the old day gets a mirror on the old day
+  and a copy on the new day (rule 2). Balances and stock do not change; both days' reports do.
+  `ReasonAction` can now also ask for a date.
+- **Repeating daily expenses** (Expenses → Repeating; `RecurringExpense`, migration
+  `20261125090000_recurring_expenses`): category, amount a day, paid by / to, note, from date.
+  Each day's entry is a normal Expense (`recurringExpenseId`, unique per item and date, so a day
+  is never added twice and a cancelled day is not re-added), filled in up to today (at most 62
+  days back) by `RecurringExpensesRunner` once a day when someone with expense access opens the
+  app, and at once when the item is added or started again. Stop / start again.
+- **Monthly costs** (rent, salary): "Monthly cost" tick on the expense form
+  (`Expense.spreadOverMonth`, own costs only). Cash in hand counts it on the day paid; the daily
+  report's profit counts month total ÷ days in month each day (`expenses.forProfit`, shown under
+  Expenses); the business analysis spreads it over the days of each period. Decisions (owner,
+  2026-11-25): daily items added automatically; monthly costs paid once and spread.
+- **Selling past the stock on hand** (owner's request: purchases are sometimes entered late):
+  counter sales, their corrections, trip dispatch and damage replacements no longer refuse;
+  stock goes below zero until the goods receipt brings it back. `assertStockOnHand` became
+  `stockShortages`; the shortfall is written in the audit entry (`soldBeyondStock`,
+  `sentBeyondStock`, `givenBeyondStock`). On screen: "Out of stock" / "Short …" in red on the
+  line and in the product search, a red note above the save buttons; Inventory shows negative
+  stock in red with "Below zero"; the daily report's attention list points to New purchase.
+
 ## Old customers added from the Ledgers box — done
 
 - In "Add to a customer's balance" (Ledgers), a name not in the list offers "+ New customer":
