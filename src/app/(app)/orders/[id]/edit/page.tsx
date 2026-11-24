@@ -11,6 +11,7 @@ import { requireTenantContext } from "@/server/auth/session";
 import { correctCounterSaleAction, saveSalesOrderAction } from "@/server/sales-actions";
 import { warehouseOptions } from "@/server/services/master/warehouses";
 import { customersForOrders, getSalesOrder } from "@/server/services/sales/orders";
+import { addToBalanceAction } from "@/server/payment-actions";
 
 export const metadata: Metadata = { title: "Edit order" };
 
@@ -68,6 +69,7 @@ export default async function EditOrderPage({ params }: PageProps<"/orders/[id]/
         }
         warehouses={warehouses}
         canOverrideCredit={can(ctx.user.role, "orders.overrideCreditLimit")}
+        addToBalance={can(ctx.user.role, "payments.manage") ? addToBalanceAction : undefined}
         initial={{
           orderId: id,
           customerId: order.customerId,

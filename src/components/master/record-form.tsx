@@ -8,7 +8,6 @@ import { FieldError, FormMessage } from "@/components/form/form-message";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { type ActionState, fieldError, idleState } from "@/lib/action-state";
-import { cn } from "@/lib/utils";
 
 // One form component for all master records, driven by a serializable field list built on the
 // server. Keyboard-first: the first field is focused, Enter saves, Tab follows the visual order.
@@ -49,12 +48,6 @@ export type FieldDef =
       kind: "slabs";
       defaultValue: { fromDozens: string; value: string }[];
       discountTypeField: string;
-    }
-  | {
-      kind: "openings";
-      companies: { id: string; name: string; group?: string }[];
-      defaultValue: Record<string, string>;
-      hint: string;
     };
 
 const WIDTH = { sm: "sm:col-span-1", md: "sm:col-span-2", full: "sm:col-span-4" } as const;
@@ -150,9 +143,6 @@ export function RecordForm({
                 disabled={discountType === "NONE"}
               />
             );
-          }
-          if (field.kind === "openings") {
-            return <OpeningBalances key="openings" state={state} {...field} />;
           }
           if (!shown(field)) return null;
           const autoFocus = i === firstInput;
@@ -264,58 +254,6 @@ function SlabsEditor({
                 />
                 <FieldError id={`slab-${i}-value-error`} message={valueError} />
               </div>
-            </div>
-          );
-        })}
-      </div>
-    </fieldset>
-  );
-}
-
-function OpeningBalances({
-  state,
-  companies,
-  defaultValue,
-  hint,
-}: {
-  state: ActionState;
-  companies: { id: string; name: string; group?: string }[];
-  defaultValue: Record<string, string>;
-  hint: string;
-}) {
-  if (companies.length === 0) {
-    return (
-      <p className="text-muted-foreground text-sm sm:col-span-4">
-        Add companies first to enter opening balances.
-      </p>
-    );
-  }
-  return (
-    <fieldset className="space-y-2 sm:col-span-4">
-      <legend className="text-sm font-medium">Opening balance per company (PKR)</legend>
-      <p className="text-muted-foreground text-xs">{hint}</p>
-      <div className="grid gap-x-4 gap-y-2 sm:grid-cols-2">
-        {companies.map((company) => {
-          const name = `opening:${company.id}`;
-          const error = fieldError(state, `openingBalances.${company.id}`);
-          const echoed = state.status === "error" ? state.values?.[name] : undefined;
-          return (
-            <div key={company.id} className={cn("grid grid-cols-[1fr_9rem] items-center gap-2")}>
-              <label htmlFor={name} className="text-sm">
-                {company.name}
-                {company.group ? (
-                  <span className="text-muted-foreground"> · {company.group}</span>
-                ) : null}
-              </label>
-              <Input
-                id={name}
-                name={name}
-                inputMode="decimal"
-                defaultValue={echoed ?? defaultValue[company.id] ?? ""}
-                placeholder="0"
-                aria-invalid={error ? true : undefined}
-              />
-              <FieldError id={`${name}-error`} message={error} />
             </div>
           );
         })}

@@ -19,7 +19,6 @@ import { createWarehouse } from "./warehouses";
 const file = (name: string, text: string) => ({ name, bytes: Buffer.from(text, "utf8") });
 
 let ctx: ServiceCtx;
-let crunchyId: string;
 
 beforeEach(async () => {
   const suffix = randomUUID().slice(0, 8);
@@ -38,13 +37,11 @@ beforeEach(async () => {
     user: { id: owner.id, role: "OWNER", tenantId: tenant.id },
   };
   const warehouse = await createWarehouse(ctx, { name: "Main" });
-  crunchyId = (
-    await createCompany(ctx, {
-      warehouseId: warehouse.id,
-      name: "Crunchy Bites Foods",
-      paymentTermsDays: "15",
-    })
-  ).id;
+  await createCompany(ctx, {
+    warehouseId: warehouse.id,
+    name: "Crunchy Bites Foods",
+    paymentTermsDays: "15",
+  });
   await createArea(ctx, { warehouseId: warehouse.id, name: "Shahdara Town" });
 });
 
@@ -138,7 +135,7 @@ describe("company and area import", () => {
       include: { area: true },
     });
     expect([kashif.area?.name, kashif.phone]).toEqual(["Township", "+92 3211234567"]);
-    expect((await getCustomer(ctx, kashif.id)).openingBalances).toEqual({ [golden.id]: "1200.00" });
+    expect((await getCustomer(ctx, kashif.id)).openingBalance).toBe("1200.00");
   });
 
   it("is for owners only", async () => {
@@ -151,7 +148,7 @@ describe("company and area import", () => {
 
 describe("customer import", () => {
   const CUSTOMERS = [
-    "Name,Shop name,Type,Phone,Area,Credit limit,Opening: Crunchy Bites Foods",
+    "Name,Shop name,Type,Phone,Area,Credit limit,Opening balance",
     "Ali Khan,Khan Store,Retailer,0300-1234567,Shahdara Town,25000,5000",
     "Zubair,,Wholesaler,0301-7654321,,,",
     "Nobody,,Retailer,,Atlantis,,",
@@ -167,7 +164,7 @@ describe("customer import", () => {
     const result = await commitImport(ctx, "customers", file("c.csv", CUSTOMERS), randomUUID());
     expect(result).toEqual({ created: 3, updated: 0, existing: 0, skipped: 1, areasCreated: 1 });
     const ali = await ctx.db.customer.findFirstOrThrow({ where: { name: "Ali Khan" } });
-    expect((await getCustomer(ctx, ali.id)).openingBalances).toEqual({ [crunchyId]: "5000.00" });
+    expect((await getCustomer(ctx, ali.id)).openingBalance).toBe("5000.00");
     expect(ali.creditLimit?.toFixed(2)).toBe("25000.00");
     const nobody = await ctx.db.customer.findFirstOrThrow({
       where: { name: "Nobody" },

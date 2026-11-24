@@ -10,6 +10,7 @@ import { saveCounterSaleAction } from "@/server/sales-actions";
 import { areasForOrders } from "@/server/services/master/areas";
 import { warehouseOptions } from "@/server/services/master/warehouses";
 import { customersForOrders, getOrderSummary } from "@/server/services/sales/orders";
+import { addToBalanceAction } from "@/server/payment-actions";
 
 export const metadata: Metadata = { title: "Counter sale" };
 
@@ -57,6 +58,7 @@ export default async function CounterSalePage({ searchParams }: PageProps<"/orde
         warehouses={warehouses}
         areas={areas}
         canOverrideCredit={can(ctx.user.role, "orders.overrideCreditLimit")}
+        addToBalance={can(ctx.user.role, "payments.manage") ? addToBalanceAction : undefined}
         initial={{
           orderDate: toDateInput(businessToday()),
           deliveryDate: toDateInput(businessToday()),

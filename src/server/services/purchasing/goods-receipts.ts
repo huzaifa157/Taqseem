@@ -3,10 +3,15 @@ import "server-only";
 import { Prisma } from "@/generated/prisma/client";
 import { businessToday } from "@/lib/dates";
 import { PACKETS_PER_DOZEN } from "@/lib/units";
-import { goodsReceiptSchema, reverseSchema } from "@/lib/validation/purchasing";
+import {
+  type GoodsReceiptInput,
+  goodsReceiptSchema,
+  reverseSchema,
+} from "@/lib/validation/purchasing";
 
 import { writeAudit } from "../../audit";
 import { assertCan, can } from "../../auth/permissions";
+import type { TenantTx } from "../../db/tenant";
 import { ServiceError } from "../errors";
 import { PAGE_SIZE, paged, type ServiceCtx } from "../master/common";
 import {
@@ -126,196 +131,203 @@ export async function getGoodsReceipt(ctx: ServiceCtx, id: string) {
 export async function createGoodsReceipt(ctx: ServiceCtx, input: unknown) {
   assertCan(ctx.user.role, "operations.manage");
   const data = goodsReceiptSchema.parse(input);
-  const showCost = can(ctx.user.role, "financials.view");
-  const mayOverrideDue = can(ctx.user.role, "payments.manage");
-
   return ctx.db.$transaction(
     async (tx) => {
-      if (data.requestId) {
-        const existing = await tx.goodsReceipt.findUnique({
-          where: { tenantId_requestId: { tenantId: ctx.user.tenantId, requestId: data.requestId } },
-          include: { companyBill: true },
-        });
-        // Every receipt is posted together with its bill.
-        if (existing) return { ...existing, companyBill: existing.companyBill! };
-      }
-
-      const company = await tx.company.findUnique({ where: { id: data.companyId } });
-      if (!company || !company.isActive) throw new ServiceError("Choose an active company.");
-
-      const po = data.purchaseOrderId
-        ? await tx.purchaseOrder.findUnique({
-            where: { id: data.purchaseOrderId },
-            include: { lines: true },
-          })
-        : null;
-      if (data.purchaseOrderId) {
-        if (!po || po.companyId !== company.id)
-          throw new ServiceError("The purchase order does not belong to this company.");
-        if (po.status !== "OPEN" && po.status !== "PARTIALLY_RECEIVED") {
-          throw new ServiceError(
-            `Purchase order #${po.number} is ${po.status.toLowerCase().replace("_", " ")}.`,
-          );
-        }
-      }
-      const poLineByProduct = new Map((po?.lines ?? []).map((l) => [l.productId, l]));
-
-      const products = await tx.product.findMany({
-        where: { id: { in: data.lines.map((l) => l.productId) } },
-      });
-      const productById = new Map(products.map((p) => [p.id, p]));
-      for (const line of data.lines) {
-        const p = productById.get(line.productId);
-        if (!p || p.companyId !== company.id)
-          throw new ServiceError("Every product must belong to the chosen company.");
-      }
-
-      // Rate: typed (cost-visible roles) → purchase-order rate → product purchase rate.
-      const lines = data.lines.map((line) => {
-        const product = productById.get(line.productId)!;
-        const poLine = poLineByProduct.get(line.productId);
-        const rate =
-          showCost && line.rate !== null
-            ? new Prisma.Decimal(line.rate)
-            : (poLine?.rate ?? product.purchaseRate);
-        const { netAmount } = calculateLineAmounts({
-          quantity: line.quantity,
-          baseUnitsPerPriceUnit: PACKETS_PER_DOZEN,
-          rate,
-        });
-        return { product, poLine, quantity: line.quantity, rate, amount: netAmount };
-      });
-      const gross = lines.reduce((sum, l) => sum.add(l.amount), new Prisma.Decimal(0));
-
-      const receipt = await tx.goodsReceipt.create({
-        data: {
-          tenantId: ctx.user.tenantId,
-          number: await nextDocumentNumber(tx, ctx, "GOODS_RECEIPT"),
-          purchaseOrderId: po?.id ?? null,
-          companyId: company.id,
-          warehouseId: company.warehouseId,
-          receivedDate: data.receivedDate,
-          supplierRef: data.supplierRef,
-          sacksReceived: data.sacksReceived,
-          note: data.note,
-          requestId: data.requestId,
-          createdById: ctx.user.id,
-        },
-      });
-
-      for (const line of lines) {
-        const receiptLine = await tx.goodsReceiptLine.create({
-          data: {
-            tenantId: ctx.user.tenantId,
-            goodsReceiptId: receipt.id,
-            purchaseOrderLineId: line.poLine?.id ?? null,
-            productId: line.product.id,
-            quantity: line.quantity,
-            rate: line.rate,
-            amount: line.amount,
-          },
-        });
-        const batch = await tx.batch.create({
-          data: {
-            tenantId: ctx.user.tenantId,
-            productId: line.product.id,
-            warehouseId: company.warehouseId,
-            goodsReceiptLineId: receiptLine.id,
-            receivedDate: data.receivedDate,
-          },
-        });
-        await tx.stockMovement.create({
-          data: {
-            tenantId: ctx.user.tenantId,
-            type: "GOODS_RECEIPT",
-            productId: line.product.id,
-            warehouseId: company.warehouseId,
-            batchId: batch.id,
-            bucket: "SALEABLE",
-            quantity: line.quantity,
-            occurredAt: data.receivedDate,
-            referenceType: "GoodsReceipt",
-            referenceId: receipt.id,
-            createdById: ctx.user.id,
-          },
-        });
-      }
-
-      // Pending damage claims are deducted on this bill (SPEC §4), whole claims only.
-      const pending = await tx.companyClaim.findMany({
-        where: { companyId: company.id, status: "PENDING" },
-      });
-      const deduction = claimsToDeduct(gross, pending);
-
-      const bill = await tx.companyBill.create({
-        data: {
-          tenantId: ctx.user.tenantId,
-          number: await nextDocumentNumber(tx, ctx, "COMPANY_BILL"),
-          companyId: company.id,
-          goodsReceiptId: receipt.id,
-          billDate: data.receivedDate,
-          dueDate:
-            mayOverrideDue && data.dueDate
-              ? data.dueDate
-              : addDays(data.receivedDate, company.paymentTermsDays),
-          grossAmount: gross,
-          claimDeduction: deduction.total,
-          netAmount: gross.sub(deduction.total),
-          createdById: ctx.user.id,
-        },
-      });
-      if (deduction.ids.length > 0) {
-        await tx.companyClaim.updateMany({
-          where: { id: { in: deduction.ids } },
-          data: { status: "APPLIED", appliedToBillId: bill.id },
-        });
-      }
-      await postCompanyLedger(tx, ctx, {
-        companyId: company.id,
-        type: "COMPANY_BILL",
-        entryDate: data.receivedDate,
-        credit: gross,
-        description: `Bill #${bill.number} for goods receipt #${receipt.number}`,
-        referenceType: "CompanyBill",
-        referenceId: bill.id,
-      });
-      // Money already paid to this company ahead of the goods (an advance) pays the new bill.
-      const paidFromAdvance = await applyAdvances(tx, ctx, company.id, bill.id);
-
-      if (po) await refreshPurchaseOrderStatus(tx, po.id);
-
-      await writeAudit(tx, ctx.user, {
-        action: "POST",
-        entityType: "GoodsReceipt",
-        entityId: receipt.id,
-        newValue: {
-          number: receipt.number,
-          companyId: company.id,
-          purchaseOrderId: po?.id ?? null,
-          receivedDate: data.receivedDate,
-          lines: lines.map((l) => ({
-            productId: l.product.id,
-            quantity: l.quantity,
-            rate: l.rate,
-          })),
-          bill: {
-            number: bill.number,
-            gross,
-            claimDeduction: deduction.total,
-            dueDate: bill.dueDate,
-            paidFromAdvance: paidFromAdvance.reduce(
-              (s, m) => s.add(m.amount),
-              new Prisma.Decimal(0),
-            ),
-          },
-        },
-        requestId: data.requestId,
-      });
-      return { ...receipt, companyBill: bill };
+      const existing = await existingReceipt(tx, ctx, data.requestId);
+      return existing ?? postGoodsReceipt(tx, ctx, data);
     },
     // Serializable: two receipts at once must not both deduct the same pending claim.
     { timeout: 30_000, isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
   );
+}
+
+/** A receipt already posted with this request id (a retried save), with its bill. */
+export async function existingReceipt(tx: TenantTx, ctx: ServiceCtx, requestId?: string) {
+  if (!requestId) return null;
+  const existing = await tx.goodsReceipt.findUnique({
+    where: { tenantId_requestId: { tenantId: ctx.user.tenantId, requestId } },
+    include: { companyBill: true },
+  });
+  // Every receipt is posted together with its bill.
+  return existing ? { ...existing, companyBill: existing.companyBill! } : null;
+}
+
+/**
+ * Posts a goods receipt inside the caller's transaction: the stock as a new batch per line, the
+ * company bill (less pending claims) and its ledger entry; an advance already paid pays the bill.
+ */
+export async function postGoodsReceipt(tx: TenantTx, ctx: ServiceCtx, data: GoodsReceiptInput) {
+  const showCost = can(ctx.user.role, "financials.view");
+  const mayOverrideDue = can(ctx.user.role, "payments.manage");
+  const company = await tx.company.findUnique({ where: { id: data.companyId } });
+  if (!company || !company.isActive) throw new ServiceError("Choose an active company.");
+
+  const po = data.purchaseOrderId
+    ? await tx.purchaseOrder.findUnique({
+        where: { id: data.purchaseOrderId },
+        include: { lines: true },
+      })
+    : null;
+  if (data.purchaseOrderId) {
+    if (!po || po.companyId !== company.id)
+      throw new ServiceError("The purchase order does not belong to this company.");
+    if (po.status !== "OPEN" && po.status !== "PARTIALLY_RECEIVED") {
+      throw new ServiceError(
+        `Purchase order #${po.number} is ${po.status.toLowerCase().replace("_", " ")}.`,
+      );
+    }
+  }
+  const poLineByProduct = new Map((po?.lines ?? []).map((l) => [l.productId, l]));
+
+  const products = await tx.product.findMany({
+    where: { id: { in: data.lines.map((l) => l.productId) } },
+  });
+  const productById = new Map(products.map((p) => [p.id, p]));
+  for (const line of data.lines) {
+    const p = productById.get(line.productId);
+    if (!p || p.companyId !== company.id)
+      throw new ServiceError("Every product must belong to the chosen company.");
+  }
+
+  // Rate: typed (cost-visible roles) → purchase-order rate → product purchase rate.
+  const lines = data.lines.map((line) => {
+    const product = productById.get(line.productId)!;
+    const poLine = poLineByProduct.get(line.productId);
+    const rate =
+      showCost && line.rate !== null
+        ? new Prisma.Decimal(line.rate)
+        : (poLine?.rate ?? product.purchaseRate);
+    const { netAmount } = calculateLineAmounts({
+      quantity: line.quantity,
+      baseUnitsPerPriceUnit: PACKETS_PER_DOZEN,
+      rate,
+    });
+    return { product, poLine, quantity: line.quantity, rate, amount: netAmount };
+  });
+  const gross = lines.reduce((sum, l) => sum.add(l.amount), new Prisma.Decimal(0));
+
+  const receipt = await tx.goodsReceipt.create({
+    data: {
+      tenantId: ctx.user.tenantId,
+      number: await nextDocumentNumber(tx, ctx, "GOODS_RECEIPT"),
+      purchaseOrderId: po?.id ?? null,
+      companyId: company.id,
+      warehouseId: company.warehouseId,
+      receivedDate: data.receivedDate,
+      supplierRef: data.supplierRef,
+      sacksReceived: data.sacksReceived,
+      note: data.note,
+      requestId: data.requestId,
+      createdById: ctx.user.id,
+    },
+  });
+
+  for (const line of lines) {
+    const receiptLine = await tx.goodsReceiptLine.create({
+      data: {
+        tenantId: ctx.user.tenantId,
+        goodsReceiptId: receipt.id,
+        purchaseOrderLineId: line.poLine?.id ?? null,
+        productId: line.product.id,
+        quantity: line.quantity,
+        rate: line.rate,
+        amount: line.amount,
+      },
+    });
+    const batch = await tx.batch.create({
+      data: {
+        tenantId: ctx.user.tenantId,
+        productId: line.product.id,
+        warehouseId: company.warehouseId,
+        goodsReceiptLineId: receiptLine.id,
+        receivedDate: data.receivedDate,
+      },
+    });
+    await tx.stockMovement.create({
+      data: {
+        tenantId: ctx.user.tenantId,
+        type: "GOODS_RECEIPT",
+        productId: line.product.id,
+        warehouseId: company.warehouseId,
+        batchId: batch.id,
+        bucket: "SALEABLE",
+        quantity: line.quantity,
+        occurredAt: data.receivedDate,
+        referenceType: "GoodsReceipt",
+        referenceId: receipt.id,
+        createdById: ctx.user.id,
+      },
+    });
+  }
+
+  // Pending damage claims are deducted on this bill (SPEC §4), whole claims only.
+  const pending = await tx.companyClaim.findMany({
+    where: { companyId: company.id, status: "PENDING" },
+  });
+  const deduction = claimsToDeduct(gross, pending);
+
+  const bill = await tx.companyBill.create({
+    data: {
+      tenantId: ctx.user.tenantId,
+      number: await nextDocumentNumber(tx, ctx, "COMPANY_BILL"),
+      companyId: company.id,
+      goodsReceiptId: receipt.id,
+      billDate: data.receivedDate,
+      dueDate:
+        mayOverrideDue && data.dueDate
+          ? data.dueDate
+          : addDays(data.receivedDate, company.paymentTermsDays),
+      grossAmount: gross,
+      claimDeduction: deduction.total,
+      netAmount: gross.sub(deduction.total),
+      createdById: ctx.user.id,
+    },
+  });
+  if (deduction.ids.length > 0) {
+    await tx.companyClaim.updateMany({
+      where: { id: { in: deduction.ids } },
+      data: { status: "APPLIED", appliedToBillId: bill.id },
+    });
+  }
+  await postCompanyLedger(tx, ctx, {
+    companyId: company.id,
+    type: "COMPANY_BILL",
+    entryDate: data.receivedDate,
+    credit: gross,
+    description: `Bill #${bill.number} for goods receipt #${receipt.number}`,
+    referenceType: "CompanyBill",
+    referenceId: bill.id,
+  });
+  // Money already paid to this company ahead of the goods (an advance) pays the new bill.
+  const paidFromAdvance = await applyAdvances(tx, ctx, company.id, bill.id);
+
+  if (po) await refreshPurchaseOrderStatus(tx, po.id);
+
+  await writeAudit(tx, ctx.user, {
+    action: "POST",
+    entityType: "GoodsReceipt",
+    entityId: receipt.id,
+    newValue: {
+      number: receipt.number,
+      companyId: company.id,
+      purchaseOrderId: po?.id ?? null,
+      receivedDate: data.receivedDate,
+      lines: lines.map((l) => ({
+        productId: l.product.id,
+        quantity: l.quantity,
+        rate: l.rate,
+      })),
+      bill: {
+        number: bill.number,
+        gross,
+        claimDeduction: deduction.total,
+        dueDate: bill.dueDate,
+        paidFromAdvance: paidFromAdvance.reduce((s, m) => s.add(m.amount), new Prisma.Decimal(0)),
+      },
+    },
+    requestId: data.requestId,
+  });
+  return { ...receipt, companyBill: bill };
 }
 
 /**

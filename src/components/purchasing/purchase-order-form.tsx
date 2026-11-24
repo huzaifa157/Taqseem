@@ -102,7 +102,7 @@ export function PurchaseOrderForm({
           {pending ? "Saving…" : isNew ? "Save purchase order" : "Save changes"}
         </Button>
         <Button asChild variant="ghost">
-          <Link href="/purchases">Cancel</Link>
+          <Link href="/purchases/orders">Cancel</Link>
         </Button>
       </div>
     </form>

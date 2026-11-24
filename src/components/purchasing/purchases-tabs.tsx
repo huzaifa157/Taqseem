@@ -6,15 +6,16 @@ import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 
 const TABS = [
-  {
-    href: "/purchases",
-    label: "Purchase orders",
-    match: (p: string) => p === "/purchases" || p.startsWith("/purchases/orders"),
-  },
+  // Purchase orders are gone from the tabs: a purchase is entered in one step (New purchase).
+  // Old orders are still at /purchases/orders.
   {
     href: "/purchases/receipts",
-    label: "Goods receipts",
-    match: (p: string) => p.startsWith("/purchases/receipts"),
+    label: "Purchases",
+    match: (p: string) =>
+      p === "/purchases" ||
+      p.startsWith("/purchases/receipts") ||
+      p.startsWith("/purchases/new") ||
+      p.startsWith("/purchases/orders"),
   },
   {
     href: "/purchases/bills",

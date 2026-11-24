@@ -20,13 +20,12 @@ type Defaults = {
   areaId?: string | null;
   routeSequence?: number | null;
   creditLimit?: string | null;
-  openingBalances?: Record<string, string>;
+  openingBalance?: string;
 };
 
 export function customerFields(
   d: Defaults,
   areas: { id: string; name: string; warehouse: { name: string } }[],
-  companies: { id: string; name: string; warehouse: { name: string } }[],
 ): FieldDef[] {
   return [
     {
@@ -106,10 +105,13 @@ export function customerFields(
       width: "sm",
     },
     {
-      kind: "openings",
-      companies: companies.map((c) => ({ id: c.id, name: c.name, group: c.warehouse.name })),
-      defaultValue: d.openingBalances ?? {},
-      hint: "What the customer owed for each company when you started using the app. Use a minus sign for an advance. Changing it later posts the difference to the ledger.",
+      kind: "text",
+      name: "openingBalance",
+      label: "Opening balance (PKR)",
+      inputMode: "decimal",
+      defaultValue: d.openingBalance,
+      hint: "What the customer owed when you started using the app (minus for an advance). Changing it later posts the difference to the ledger.",
+      width: "sm",
     },
   ];
 }

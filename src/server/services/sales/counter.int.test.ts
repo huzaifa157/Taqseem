@@ -70,7 +70,7 @@ async function setup() {
     type: "RETAILER",
     areaId: area.id,
     creditLimit: "10000",
-    openingBalances: { [crunchy.id]: "4000" },
+    openingBalance: "4000",
   });
   return { ctx, as, main, crunchy, chips, customer };
 }

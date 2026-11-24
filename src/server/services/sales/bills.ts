@@ -27,8 +27,6 @@ type SnapshotLine = {
   netAmount: string;
 };
 type SnapshotCompany = { companyId: string; netAmount: string; specialDiscount?: string };
-/** `Bill.previousByCompany`, written at dispatch. */
-export type FrozenPrevious = { companyId: string; amount: string }[];
 
 export async function getBillView(ctx: ServiceCtx, orderId: string) {
   assertCan(ctx.user.role, "operations.manage");
@@ -66,21 +64,12 @@ export async function getBillView(ctx: ServiceCtx, orderId: string) {
   const productById = new Map(products.map((p) => [p.id, p]));
   const companyName = new Map(companies.map((c) => [c.id, c.name]));
 
-  // Previous pending: frozen when the bill is posted (dispatch); until then, the live balance
+  // Previous balance: frozen when the bill is posted (dispatch); until then, the live balance
   // (this bill is not in the ledger yet, so the ledger balance is exactly "previous").
   const posted = bill.postedAt !== null;
-  const live = posted ? null : await customerPending(ctx.db, order.customerId);
-  const previousTotal = posted ? bill.previousBalance : live!.total;
-  // The old balance (no company) is the part of "previous" no company accounts for.
-  const frozenCompanies = (bill.previousByCompany as FrozenPrevious | null) ?? [];
-  const oldBalance = live
-    ? live.oldBalance
-    : frozenCompanies.reduce((s, c) => s.sub(c.amount), D(previousTotal));
-  const previousFor = (companyId: string) => {
-    if (live) return live.byCompany.get(companyId) ?? D(0);
-    const frozen = frozenCompanies.find((c) => c.companyId === companyId);
-    return D(frozen?.amount ?? 0);
-  };
+  const previousTotal = posted
+    ? bill.previousBalance
+    : (await customerPending(ctx.db, order.customerId)).total;
 
   const lines = snapshot.map((l) => ({
     ...l,
@@ -91,21 +80,6 @@ export async function getBillView(ctx: ServiceCtx, orderId: string) {
     companyName: companyName.get(l.companyId) ?? "",
   }));
   const totalDue = previousTotal.add(revision.netAmount);
-  const sections = companyTotals
-    .map((c) => {
-      const previous = previousFor(c.companyId);
-      return {
-        companyId: c.companyId,
-        companyName: companyName.get(c.companyId) ?? "",
-        lines: lines.filter((l) => l.companyId === c.companyId),
-        thisBill: D(c.netAmount),
-        /** This company's share of the special discount (already off `thisBill`). */
-        specialDiscount: D(c.specialDiscount ?? 0),
-        previous,
-        totalDue: previous.add(c.netAmount),
-      };
-    })
-    .sort((a, b) => a.companyName.localeCompare(b.companyName));
 
   return {
     tenant: { name: tenant.name, address: tenant.address, phone: tenant.phone },
@@ -138,10 +112,7 @@ export async function getBillView(ctx: ServiceCtx, orderId: string) {
       specialDiscount: companyTotals.reduce((s, c) => s.add(c.specialDiscount ?? 0), D(0)),
     },
     lines,
-    sections,
     previous: previousTotal,
-    /** Part of `previous` from old paper bills (no company); never in the company sections. */
-    oldBalance,
     totalDue,
     /** Paid with the order (a counter sale), and how; the bill shows it and the balance left. */
     paid: {

@@ -823,9 +823,7 @@ export async function orderEntryContext(
     : null;
   const warehouseId = customer?.area?.warehouseId ?? opts.warehouseId ?? null;
   const [pending, openOrders, companies, posted] = await Promise.all([
-    customer
-      ? customerPending(ctx.db, customer.id)
-      : { total: new Prisma.Decimal(0), oldBalance: new Prisma.Decimal(0), byCompany: new Map() },
+    customer ? customerPending(ctx.db, customer.id) : { total: new Prisma.Decimal(0) },
     customer ? openOrdersTotal(ctx.db, customer.id, opts.excludeOrderId) : new Prisma.Decimal(0),
     ctx.db.company.findMany({ select: { id: true, name: true } }),
     opts.excludeOrderId ? postedCounterSale(ctx, opts.excludeOrderId) : null,
@@ -833,17 +831,7 @@ export async function orderEntryContext(
   const companyName = new Map(companies.map((c) => [c.id, c.name]));
   // Correcting a counter sale: show the balance and the stock as they were before it (its bill,
   // its payment and its stock are put back when it is saved again).
-  if (posted) {
-    for (const [companyId, amount] of posted.ledger) {
-      pending.total = pending.total.sub(amount);
-      if (companyId === null) pending.oldBalance = pending.oldBalance.sub(amount);
-      else
-        pending.byCompany.set(
-          companyId,
-          (pending.byCompany.get(companyId) ?? new Prisma.Decimal(0)).sub(amount),
-        );
-    }
-  }
+  if (posted) pending.total = pending.total.sub(posted.ledger);
 
   let products: {
     id: string;
@@ -924,14 +912,6 @@ export async function orderEntryContext(
         },
     warehouseId,
     pending: pending.total.toFixed(2),
-    // The old balance (paper bills, no company) first, under companyId "".
-    pendingByCompany: [["", pending.oldBalance] as const, ...pending.byCompany]
-      .filter(([, v]) => !v.isZero())
-      .map(([companyId, v]) => ({
-        companyId,
-        companyName: companyId ? (companyName.get(companyId) ?? "") : "Old balance",
-        amount: v.toFixed(2),
-      })),
     openOrders: openOrders.toFixed(2),
     products,
     lastOrder: last
@@ -948,8 +928,7 @@ export type OrderEntryContext = Awaited<ReturnType<typeof orderEntryContext>>;
 
 /**
  * What a posted counter sale still adds up to: its bill and its own payments in the customer
- * ledger (net, per company; null = old balance) and the packets it took out of stock. Null for
- * any other order.
+ * ledger (net) and the packets it took out of stock. Null for any other order.
  */
 async function postedCounterSale(ctx: ServiceCtx, orderId: string) {
   const order = await ctx.db.salesOrder.findUnique({
@@ -964,8 +943,7 @@ async function postedCounterSale(ctx: ServiceCtx, orderId: string) {
   if (!order || order.fulfilment !== "COUNTER" || order.status !== "DELIVERED" || !order.bill)
     return null;
   const [ledger, stock] = await Promise.all([
-    ctx.db.ledgerEntry.groupBy({
-      by: ["companyId"],
+    ctx.db.ledgerEntry.aggregate({
       where: {
         partyType: "CUSTOMER",
         OR: [
@@ -985,12 +963,7 @@ async function postedCounterSale(ctx: ServiceCtx, orderId: string) {
     }),
   ]);
   return {
-    ledger: new Map(
-      ledger.map((g) => [
-        g.companyId,
-        new Prisma.Decimal(g._sum.debit ?? 0).sub(g._sum.credit ?? 0),
-      ]),
-    ),
+    ledger: new Prisma.Decimal(ledger._sum.debit ?? 0).sub(ledger._sum.credit ?? 0),
     /** Packets to add back (the sale's movements are negative). */
     stock: new Map(stock.map((g) => [g.productId, -(g._sum.quantity ?? 0)])),
   };

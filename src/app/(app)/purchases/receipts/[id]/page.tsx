@@ -37,11 +37,7 @@ export default async function GoodsReceiptPage({
         />
         <Notice
           notice={notice}
-          next={
-            notice === "posted"
-              ? [{ href: "/purchases/receipts/new", label: "Receive more goods" }]
-              : []
-          }
+          next={notice === "posted" ? [{ href: "/purchases/new", label: "New purchase" }] : []}
         />
         <PostingBadge status={r.status} />
         {r.status === "REVERSED" ? (

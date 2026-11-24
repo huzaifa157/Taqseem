@@ -25,12 +25,14 @@ The full requirements are in `docs/SPEC.md`. Read the relevant section before st
    - `StockMovement` for stock (balance = sum of movements per product per warehouse).
    - `LedgerEntry` for money (customer, company and staff balances = sum of entries).
    Posted entries are never edited or deleted; corrections are reversal entries.
-3. **Customer ledger entries always store `companyId`**, so we can show a customer's ledger
-   for all companies or for one company. *Approved exception:* the customer's **old balance**
-   (`CustomerOldBill`, unpaid paper bills from before the app, owed to us and not to a company)
-   posts with `companyId` null, as do payments, bounces and reversals that settle it. It counts in
-   the customer's total, shows as "Old balance", is paid first and is left out of every company
-   figure. A DB CHECK allows null only for those entry types.
+3. **Each customer has one account (no company split).** Customer ledger entries and payment
+   allocations post with `companyId` null: one entry per bill, day-end revision, return and
+   payment. Payments go to the oldest debt first: the old balance (`CustomerOldBill`, paper bills
+   from before the app) and any opening balance, then bills oldest first; the rest is an advance.
+   Each customer has their own credit limit. Entries posted before this change keep their company
+   but are always read as one account. Sales per company come from the bill's products
+   (`BillRevision.companyTotals`), never from the customer ledger. (Changed on the owner's request,
+   2026-11-23; previously every customer entry carried a company.)
 4. **Quantities** are stored as integers in the smallest unit: the packet (12 packets = 1 dozen).
    Orders and purchases are entered in whole or half dozens; damage and returns in packets.
    Convert to dozens only for display (`formatDozens`). Keep a `UnitConversion` table so

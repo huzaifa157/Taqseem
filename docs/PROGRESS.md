@@ -2,6 +2,98 @@
 
 Running log of what has been built, decisions taken, and open items. Newest first.
 
+## Add to a customer's balance (Ledgers, order and counter sale) — done
+
+- **Ledgers**: "Add to a customer's balance" box at the top: search the customer → amount →
+  note → Add (Enter); it stays on the page with "Rs X added … Now owes Rs Y" and is ready for
+  the next customer.
+- **Order / counter sale / correct sale**: "+ Add to balance" next to the customer's balance;
+  amount + note, added at once, and the panel reloads, so the bill prints it in "Previous
+  balance". (Inputs have no names, so nothing goes with the order form.)
+- Both use `addToBalanceAction` → `createOldBill` (old-balance entry dated today): payments clear
+  it first, it can be removed by reversal on the Old balance page, and it is audited. On the
+  statement an entry with no paper-bill number reads "Added to balance: <note>". Owner and
+  accountant only (payments.manage), as for old balances.
+
+## Purchase in one step — done
+
+- New screen **Purchases → New purchase** (`/purchases/new`, `components/purchasing/
+  purchase-entry.tsx`): company, date (today), company invoice no., sacks; products added by
+  search (code or name → Enter → dozens → Enter → rate → Enter, back to the search), amount per
+  line and bill total; **Paid now** (blank or 0 = all on account, any part, "Full"; cash /
+  cheque / online). Ctrl+Enter saves; "Save & next" for the next purchase.
+- `createPurchase` (`services/purchasing/purchases.ts`), one transaction: a goods receipt with no
+  purchase order (stock as a new batch, company bill less pending claims, advance applied) and,
+  when paid, a company payment that pays this bill first, then older bills; the rest is an
+  advance. Retries with the same request id post nothing twice. Paying needs payments.manage
+  (staff can enter what came in). `postGoodsReceipt` / `postCompanyPayment` were split out of
+  the existing services for this.
+- Purchase orders and "Receive goods" are out of the way: `/purchases` opens the purchase list
+  (was the goods receipts list, now titled Purchases), the Purchase orders tab is gone, the old
+  receive page redirects to New purchase, the dashboard shortcut is "New purchase". Old orders
+  stay viewable at `/purchases/orders`.
+
+## Correct a product's company after it has stock — done
+
+- Editing a product's company was refused once it had stock or orders. Now (`moveToCompany`
+  in `services/master/products.ts`) it is allowed when the new company uses the same warehouse
+  (stock belongs to product + warehouse, so it stays put), or when the product has no stock and
+  no open orders. Booked / planned orders' lines move too. Bills are never rewritten: the
+  dashboard's sales by company (`salesPerCompany`) and the business analysis read each product's
+  current company, so its sales count for the right company. Posted purchases, company bills and
+  claims keep the company they were recorded with. Refused while the product is on an open
+  purchase order. Audited with the old and new company names.
+
+## Bills fill the page before going to page 2 — done
+
+- A printed bill broke to page 2 too early (an 18-line A5 bill used two-thirds of page 1 and put
+  one line and the totals on page 2). The page-break sums in `lib/print.ts` assumed more room for
+  the header, footer and totals than they take. Measured: page 1 head 8.3 em (was 11), later head
+  4.9 (6), footer 1.45 (2.4), totals 9.3, up to 10.6 with every optional line (12). New values
+  9.5 / 5.5 / 1.8 / 11. On A5 at 10 pt, up to 20 lines now print on one page with the totals
+  (17 before); a longer bill fills page 1 with 26 lines. Checked in print emulation that the
+  largest totals block never reaches the footer.
+
+## One account per customer (no company split) — done
+
+Decision (owner, 2026-11-23): the customer ledger is not company-wise; each customer has one
+account with their own credit limit. CLAUDE.md rule 3 rewritten.
+
+- Migration `20261123090000_customer_single_account`: the LedgerEntry party CHECK no longer asks
+  customer entries for a company; `PaymentAllocation.companyId` is nullable.
+- Posting: a bill (dispatch, counter sale, correction), a day-end bill revision, a return of
+  earlier goods and a payment each post one customer entry with no company. Old entries keep
+  their company; every read sums them as one account.
+- Payments (`lib/payments.ts`, rewritten): oldest debt first: debt with no bill (old balance and
+  opening balance), then bills oldest first, allocated per bill; the rest is an advance (no
+  longer refused when nothing is owed). The payment screen shows one table; "Split by company"
+  is gone, as is "Credited per company" on a payment.
+- `customerPending` is one total. The order screen's "Balances by company", the bill's
+  per-company previous balance and "Split by company" printing (single and bulk) are removed.
+- Customer statement: no company filter, column or "Balance by company" box; entries posted per
+  company before this change show as one row (same reference, type, date and text). Excel export
+  the same. The company "Customer balances" page (`/companies/[id]/receivables`) is removed.
+- Customers: one opening balance (blank = leave it) on the form and in the Excel import (a
+  single "Opening balance" column; older "Opening: company" columns are added up).
+- Old balance page: what is unpaid of the paper bills = debt with no bill less the opening
+  balance (the old balance is paid first), never more than the bills.
+- Dashboard "sales by company" comes from posted bills' `companyTotals`.
+- Seed posts one account per customer. Tests rewritten for one account (payments, delivery,
+  journals, printing, master, import).
+
+## Printed stock report (Inventory) — done
+
+- Inventory's print button is now "Print stock report": `/inventory/print?print=1` (same
+  filters as the list), opening the print dialog at once. Every matching product, not one
+  screen page, grouped by company with each company's totals and a grand total; LOW marks
+  below minimum; a blank Count column and "Checked by / Date" line for stock-taking. Value at
+  the purchase rate only for roles with `financials.view` (`stockReport` in
+  `services/inventory.ts`).
+- A4 portrait with `@page { margin: 0 }`, so Chrome prints no header or footer (date, title,
+  URL). The white border is the sheet's side padding plus spacer rows in the table's head and
+  foot, which repeat on every page together with the business name, title, date and column
+  headings. About 5.5 mm per row: around 45 products per page, so 58 products print on two pages.
+
 ## Special discount on the whole bill — done
 
 - A "Special discount" box (Rs) under the order / counter sale grid, before Total qty. The bill

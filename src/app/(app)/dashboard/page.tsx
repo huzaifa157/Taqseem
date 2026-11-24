@@ -275,8 +275,8 @@ function quickActions(role: Role, d: Dashboard): QuickAction[] {
       permission: "payments.manage",
     },
     {
-      href: "/purchases/receipts/new",
-      label: "Receive goods",
+      href: "/purchases/new",
+      label: "New purchase",
       icon: "goods",
       permission: "operations.manage",
     },

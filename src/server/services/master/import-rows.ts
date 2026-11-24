@@ -252,6 +252,7 @@ export const CUSTOMER_COLUMNS: Column[] = [
   { key: "warehouse", label: "Warehouse", aliases: ["area warehouse"] },
   { key: "routeSequence", label: "Visiting order", aliases: ["sequence", "route order"] },
   { key: "creditLimit", label: "Credit limit" },
+  { key: "openingBalance", label: "Opening balance", aliases: ["balance", "owes"] },
 ];
 
 /** The Type column's words, as the export writes them and the import reads them back. */
@@ -272,16 +273,16 @@ const CUSTOMER_LABELS: Record<string, string> = {
   areaId: "Area",
   routeSequence: "Visiting order",
   creditLimit: "Credit limit",
-  openingBalances: "Opening balance",
+  openingBalance: "Opening balance",
 };
 
-/** "Opening: Crunchy Bites Foods" → "Crunchy Bites Foods". */
-export function openingColumnCompany(header: string): string | null {
-  const match = /^opening(?: balance)?\s*[:\-–]\s*(.+)$/i.exec(header.trim());
-  return match ? match[1]!.trim() : null;
+/**
+ * "Opening: Crunchy Bites Foods": a column from sheets made before customers had one account
+ * (one opening balance per company). Such columns are added up into the one opening balance.
+ */
+export function isPerCompanyOpeningColumn(header: string): boolean {
+  return /^opening(?: balance)?\s*[:\-–]\s*(.+)$/i.test(header.trim());
 }
-
-export const openingColumnLabel = (companyName: string) => `Opening: ${companyName}`;
 
 const TYPE_ALIASES: Record<string, (typeof CUSTOMER_TYPES)[number]> = {
   retailer: "RETAILER",
@@ -358,8 +359,8 @@ export function validateCustomerRows(
 ): ValidatedRow<CustomerInput>[] {
   const index = columnIndex(table.headers, CUSTOMER_COLUMNS);
   const openingColumns = table.headers
-    .map((header, i) => ({ header, i, company: openingColumnCompany(header) }))
-    .filter((c): c is { header: string; i: number; company: string } => c.company !== null);
+    .map((header, i) => ({ header, i }))
+    .filter((c) => isPerCompanyOpeningColumn(c.header));
   const seen = new Set<string>();
   const newAreas = new Map<string, NewArea>();
 
@@ -391,15 +392,15 @@ export function validateCustomerRows(
       newAreas.set(key, newArea);
     }
 
-    const openingBalances: Record<string, string> = {};
-    for (const col of openingColumns) {
-      const companyId = lookups.companies.get(nameKey(col.company));
-      const amount = (row[col.i] ?? "").trim();
-      if (!companyId) {
-        if (amount) errors.push(`${col.header}: "${col.company}" is not an active company`);
-        continue;
-      }
-      if (amount) openingBalances[companyId] = amount;
+    // One opening balance: the column, plus any older per-company columns added up.
+    const parts = [get("openingBalance"), ...openingColumns.map((c) => row[c.i] ?? "")]
+      .map((v) => v.trim().replace(/,/g, ""))
+      .filter(Boolean);
+    let openingBalance = parts.length === 1 ? parts[0] : "";
+    if (parts.length > 1) {
+      if (parts.every((v) => /^-?\d+(\.\d{1,2})?$/.test(v)))
+        openingBalance = parts.reduce((sum, v) => sum + Math.round(Number(v) * 100), 0) / 100 + "";
+      else errors.push("Opening balance: use amounts in rupees, e.g. 3500 or -250");
     }
 
     const parsed = customerSchema.safeParse({
@@ -412,7 +413,7 @@ export function validateCustomerRows(
       areaId: areaId ?? "",
       routeSequence: get("routeSequence"),
       creditLimit: get("creditLimit"),
-      openingBalances,
+      openingBalance,
     });
     if (!parsed.success) errors.push(...issueMessages(parsed.error, CUSTOMER_LABELS));
 
@@ -611,11 +612,11 @@ export function customerExportTable(customers: ExportCustomer[]) {
 }
 
 /** Template header row for each import. */
-export function templateHeaders(kind: ImportKind, companyNames: string[] = []): string[] {
+export function templateHeaders(kind: ImportKind): string[] {
   if (kind === "products") return PRODUCT_COLUMNS.map((c) => c.label);
   if (kind === "companies") return COMPANY_COLUMNS.map((c) => c.label);
   if (kind === "areas") return AREA_COLUMNS.map((c) => c.label);
-  return [...CUSTOMER_COLUMNS.map((c) => c.label), ...companyNames.map(openingColumnLabel)];
+  return CUSTOMER_COLUMNS.map((c) => c.label);
 }
 
 /**
@@ -630,7 +631,6 @@ export function templateExamples(
     area?: string;
     /** The warehouse of that area. */
     areaWarehouse?: string;
-    companies?: string[];
   },
 ): string[][] {
   const warehouse = names.warehouse ?? "Main Warehouse";
@@ -674,7 +674,6 @@ export function templateExamples(
       [`${EXAMPLE_MARK} Township`, warehouse, "2"],
     ];
   const areaWarehouse = names.areaWarehouse ?? warehouse;
-  const openings = (names.companies ?? []).map((_, i) => (i === 0 ? "3500" : ""));
   return [
     [
       `${EXAMPLE_MARK} Ali Khan`,
@@ -687,7 +686,7 @@ export function templateExamples(
       areaWarehouse,
       "1",
       "25000",
-      ...openings,
+      "3500",
     ],
     [
       `${EXAMPLE_MARK} Asif Malik`,
@@ -700,7 +699,7 @@ export function templateExamples(
       areaWarehouse,
       "2",
       "",
-      ...openings.map(() => ""),
+      "",
     ],
   ];
 }
@@ -728,7 +727,7 @@ export const IMPORT_NOTES: Record<ImportKind, string[]> = {
     "Area: an area you already have is matched by name (and by Warehouse, when filled in). A new area is created in that warehouse, or in your only warehouse.",
     "A customer with the same name and phone as one you already have is skipped. Leave Credit limit blank for no limit.",
     "Moving customers from another Taqseem: there, use Customers → Export, then import that file here.",
-    "Opening balance columns are per company: what the customer owes for that company (negative = advance).",
+    "Opening balance: what the customer owes you now, one amount (negative = advance).",
     "In Excel, format the Phone and WhatsApp columns as Text so leading zeros are kept.",
   ],
 };

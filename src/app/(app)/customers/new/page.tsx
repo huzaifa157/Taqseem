@@ -7,7 +7,6 @@ import { RecordForm } from "@/components/master/record-form";
 import { requireTenantContext } from "@/server/auth/session";
 import { saveRecordAction } from "@/server/master-actions";
 import { areaOptions } from "@/server/services/master/areas";
-import { companyOptions } from "@/server/services/master/companies";
 
 import { customerFields } from "../customer-fields";
 
@@ -27,11 +26,11 @@ export default async function NewCustomerPage({ searchParams }: PageProps<"/cust
 
 async function Form() {
   const ctx = await requireTenantContext("masterData.manage");
-  const [areas, companies] = await Promise.all([areaOptions(ctx), companyOptions(ctx)]);
+  const areas = await areaOptions(ctx);
   return (
     <RecordForm
       action={saveRecordAction.bind(null, "Customer", null)}
-      fields={customerFields({}, areas, companies)}
+      fields={customerFields({}, areas)}
       isNew
       cancelHref="/customers"
     />

@@ -1,3 +1,4 @@
+import { Printer } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 
@@ -5,7 +6,6 @@ import { PageHeader } from "@/components/layout/page-header";
 import { DataTable, EmptyRow, Td, Th } from "@/components/list/data-table";
 import { ListToolbar } from "@/components/list/list-toolbar";
 import { Pagination } from "@/components/list/pagination";
-import { PrintButton } from "@/components/layout/print-button";
 import { LinkButton } from "@/components/master/page-helpers";
 import { Badge } from "@/components/ui/badge";
 import { filterParam, listParamsSchema } from "@/lib/list-params";
@@ -33,6 +33,15 @@ export default async function InventoryPage({ searchParams }: PageProps<"/invent
     warehouseOptions(ctx),
     companyOptions(ctx),
   ]);
+  const printQuery = new URLSearchParams({
+    ...Object.fromEntries(
+      (["warehouseId", "companyId", "level"] as const)
+        .map((k) => [k, filterParam(sp, k)])
+        .filter((e): e is [string, string] => Boolean(e[1])),
+    ),
+    ...(q ? { q } : {}),
+    print: "1",
+  }).toString();
   return (
     <>
       <PageHeader
@@ -53,7 +62,11 @@ export default async function InventoryPage({ searchParams }: PageProps<"/invent
                 <LinkButton href="/inventory/adjustments/new">Adjust stock</LinkButton>
               </>
             ) : null}
-            <PrintButton />
+            {/* The whole list (every page), laid out for A4: not this screen. */}
+            <LinkButton href={`/inventory/print?${printQuery}`} variant="outline">
+              <Printer aria-hidden />
+              Print stock report
+            </LinkButton>
           </>
         }
       />

@@ -241,14 +241,17 @@ export function paperHint(s: PrintSettings): string {
 
 /** One line of the bill (one row; a long name is cut short). */
 export const BILL_ROW_EM = 1.6;
-/** Page 1 above the lines: letterhead, bill to, an optional title, the column heads. */
-const FIRST_HEAD_EM = 11;
+// Measured on a printed bill (2026-11-24): page 1 head 8.3 em, later head 4.9, footer 1.45,
+// totals row + account + "This bill" 9.3 (10.6 with paid, minimum payment and special discount).
+// Each has a little to spare, so a page is filled without anything spilling over.
+/** Page 1 above the lines: letterhead, bill to, the column heads. */
+const FIRST_HEAD_EM = 9.5;
 /** Later pages above the lines: the short header and the column heads. */
-const NEXT_HEAD_EM = 6;
+const NEXT_HEAD_EM = 5.5;
 /** Every page's footer: the bill note or "continued", and "Page 1 of 2". */
-const FOOTER_EM = 2.4;
+const FOOTER_EM = 1.8;
 /** The last page under the lines: totals row, account and "This bill". */
-const TOTALS_EM = 12;
+const TOTALS_EM = 11;
 
 export type BillPagination = {
   /** Lines on page 1 when more pages follow (a "carried forward" row comes after them). */

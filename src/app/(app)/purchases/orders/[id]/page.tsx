@@ -23,23 +23,17 @@ export default async function PurchaseOrderPage({
   const [{ id }, { notice }] = await Promise.all([params, searchParams]);
   const ctx = await requireTenantContext("operations.manage");
   const po = await orNotFound(getPurchaseOrder(ctx, id));
-  const receivable = po.status === "OPEN" || po.status === "PARTIALLY_RECEIVED";
   const showRate = po.lines.some((l) => l.rate !== null);
 
   return (
     <div className="space-y-6">
       <div>
-        <BackLink href="/purchases">Purchase orders</BackLink>
+        <BackLink href="/purchases/orders">Purchase orders</BackLink>
         <PageHeader
           title={`Purchase order #${po.number}`}
           description={`${po.company.name} · ${po.warehouse.name} · ordered ${formatDate(po.orderDate)}${po.expectedDate ? ` · expected ${formatDate(po.expectedDate)}` : ""}`}
           actions={
             <>
-              {receivable ? (
-                <LinkButton href={`/purchases/receipts/new?purchaseOrderId=${po.id}`}>
-                  Receive goods
-                </LinkButton>
-              ) : null}
               {po.status === "OPEN" && !po.hasReceipts ? (
                 <LinkButton href={`/purchases/orders/${po.id}/edit`} variant="outline">
                   Edit

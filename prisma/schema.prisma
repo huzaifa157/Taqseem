@@ -1401,13 +1401,14 @@ model PaymentAllocation {
   tenantId          String
   customerPaymentId String
   billId            String
-  companyId         String
+  /// Only on allocations made before customers had one account (null since).
+  companyId         String?
   amount            Decimal @db.Decimal(14, 2)
 
   tenant          Tenant          @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   customerPayment CustomerPayment @relation(fields: [tenantId, customerPaymentId], references: [tenantId, id], onDelete: Restrict)
   bill            Bill            @relation(fields: [tenantId, billId], references: [tenantId, id], onDelete: Restrict)
-  company         Company         @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict)
+  company         Company?        @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict)
 
   @@unique([tenantId, id])
   @@unique([tenantId, customerPaymentId, billId, companyId])

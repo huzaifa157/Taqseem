@@ -58,7 +58,7 @@ async function setup(name: string) {
     type: "RETAILER",
     areaId: area.id,
     creditLimit: "100000",
-    openingBalances: { [crunchy.id]: "4000" },
+    openingBalance: "4000",
   });
   await setOpeningStock(ctx, {
     stockDate: "2026-10-01",

@@ -50,26 +50,13 @@ export async function stockPositions(
   return result;
 }
 
-/**
- * What the customer owes now (posted ledger entries only): in total, per company, and the old
- * balance (paper bills from before the app, which belong to no company). The total includes it.
- */
+/** What the customer owes now: the sum of their posted ledger entries (one account). */
 export async function customerPending(tx: Reader, customerId: string) {
-  const groups = await tx.ledgerEntry.groupBy({
-    by: ["companyId"],
+  const sum = await tx.ledgerEntry.aggregate({
     where: { partyType: "CUSTOMER", customerId },
     _sum: { debit: true, credit: true },
   });
-  const byCompany = new Map<string, Prisma.Decimal>();
-  let total = D(0);
-  let oldBalance = D(0);
-  for (const g of groups) {
-    const amount = D(g._sum.debit ?? 0).sub(g._sum.credit ?? 0);
-    if (g.companyId === null) oldBalance = amount;
-    else byCompany.set(g.companyId, amount);
-    total = total.add(amount);
-  }
-  return { total, byCompany, oldBalance };
+  return { total: D(sum._sum.debit ?? 0).sub(sum._sum.credit ?? 0) };
 }
 
 /** Bills of the customer's open (not yet dispatched) orders: committed but not in the ledger yet. */

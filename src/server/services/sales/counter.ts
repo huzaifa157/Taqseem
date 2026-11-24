@@ -101,7 +101,7 @@ export async function createCounterSale(ctx: ServiceCtx, input: unknown) {
       });
 
       const payment = paid.gt(0)
-        ? await postCounterPayment(tx, ctx, data, paid, customer.id, order, saleLines)
+        ? await postCounterPayment(tx, ctx, data, paid, customer.id, order)
         : null;
 
       await writeAudit(tx, ctx.user, {
@@ -132,7 +132,6 @@ async function postCounterPayment(
   paid: Prisma.Decimal,
   customerId: string,
   order: { id: string; number: number },
-  saleLines: { companyId: string; netAmount: Prisma.Decimal }[],
 ) {
   const { payment } = await postCustomerPayment(tx, ctx, {
     customerId,
@@ -147,8 +146,6 @@ async function postCounterPayment(
     collectedVia: "OFFICE",
     salesOrderId: order.id,
     note: `At the counter, order #${order.number}`,
-    // An overpayment is an advance for this sale's companies.
-    fallbackCompanies: saleLines.map((l) => [l.companyId, l.netAmount]),
   });
   return payment;
 }
@@ -220,7 +217,7 @@ export async function editCounterSale(ctx: ServiceCtx, id: string, input: unknow
         data.lines.map((l) => l.productId),
       );
       const lines = priceLines(products, data);
-      const { total, byCompany } = totalsWithSpecial(lines, data.specialDiscount);
+      const { total } = totalsWithSpecial(lines, data.specialDiscount);
       const netAmount = D(total.netAmount.toString());
 
       // Payments already put against this bill must still fit in it. The sale's own payment is
@@ -229,26 +226,17 @@ export async function editCounterSale(ctx: ServiceCtx, id: string, input: unknow
       const ownIds = new Set(own.map((p) => p.id));
       const allocations = await tx.paymentAllocation.findMany({
         where: { billId: bill.id, customerPayment: { status: "POSTED" } },
-        include: { company: { select: { name: true } } },
+        select: { customerPaymentId: true, amount: true },
       });
-      const sliceOf = (companyId: string) => D(byCompany.get(companyId)?.netAmount.toString() ?? 0);
-      const allocatedTo = (companyId: string, onlyOthers: boolean) =>
+      const allocated = (onlyOthers: boolean) =>
         allocations
-          .filter(
-            (a) => a.companyId === companyId && (!onlyOthers || !ownIds.has(a.customerPaymentId)),
-          )
+          .filter((a) => !onlyOthers || !ownIds.has(a.customerPaymentId))
           .reduce((s, a) => s.add(a.amount), D(0));
-      const companiesPaid = [...new Set(allocations.map((a) => a.companyId))];
-      const tooMuch = companiesPaid.find((c) => allocatedTo(c, true).gt(sliceOf(c)));
-      if (tooMuch) {
-        const name = allocations.find((a) => a.companyId === tooMuch)!.company.name;
+      if (allocated(true).gt(netAmount))
         throw new ServiceError(
-          `Later payments already paid ${formatMoney(allocatedTo(tooMuch, true))} of this bill for ${name}, more than the corrected bill has for ${name}. Reverse those payments first.`,
+          `Later payments already paid ${formatMoney(allocated(true))} of this bill, more than the corrected bill. Reverse those payments first.`,
         );
-      }
-      const keepPayment =
-        samePayment(own, data, paid) &&
-        !companiesPaid.some((c) => allocatedTo(c, false).gt(sliceOf(c)));
+      const keepPayment = samePayment(own, data, paid) && !allocated(false).gt(netAmount);
 
       if (!keepPayment) {
         const cleared = own.find((p) => p.cheque?.status === "CLEARED");
@@ -340,25 +328,21 @@ export async function editCounterSale(ctx: ServiceCtx, id: string, input: unknow
           },
           batchLeft,
         );
-      for (const [companyId, t] of byCompany) {
-        const amount = D(t.netAmount.toString());
-        if (amount.isZero()) continue;
+      if (netAmount.gt(0))
         await tx.ledgerEntry.create({
           data: {
             tenantId: ctx.user.tenantId,
             partyType: "CUSTOMER",
             customerId: before.customerId,
-            companyId,
             type: "SALES_BILL",
             entryDate: data.saleDate,
-            debit: amount,
+            debit: netAmount,
             description: `Bill #${bill.number} (order #${before.number}), corrected`,
             referenceType: "Bill",
             referenceId: bill.id,
             createdById: ctx.user.id,
           },
         });
-      }
 
       // A discount changed on this correction becomes the customer's own, as on an order edit.
       const beforeLine = new Map(before.lines.map((l) => [l.productId, lineDiscount(l)]));
@@ -412,7 +396,7 @@ export async function editCounterSale(ctx: ServiceCtx, id: string, input: unknow
 
       const payment =
         !keepPayment && paid.gt(0)
-          ? await postCounterPayment(tx, ctx, data, paid, before.customerId, before, saleLines)
+          ? await postCounterPayment(tx, ctx, data, paid, before.customerId, before)
           : null;
 
       await writeAudit(tx, ctx.user, {

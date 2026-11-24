@@ -13,6 +13,7 @@ import { requireTenantContext } from "./auth/session";
 import { updateBillDueDate } from "./services/purchasing/bills";
 import { cancelClaim, createClaim, returnSacks, settleClaim } from "./services/purchasing/claims";
 import { cancelGoodsReceipt, createGoodsReceipt } from "./services/purchasing/goods-receipts";
+import { createPurchase } from "./services/purchasing/purchases";
 import { createCompanyPayment, reverseCompanyPayment } from "./services/purchasing/payments";
 import {
   createPurchaseOrder,
@@ -100,6 +101,30 @@ export async function purchaseOrderStatusAction(
   });
   if (result.status === "success") revalidatePath(`/purchases/orders/${id}`);
   return result;
+}
+
+// ───────────────────────── Purchases ─────────────────────────
+
+/** Saves a purchase (goods in + what was paid), then opens it, or a blank one for "Save & next". */
+export async function savePurchaseAction(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const { lines, fieldErrors } = productLines(formData);
+  if (Object.keys(fieldErrors).length > 0) return lineErrorState(formData, fieldErrors);
+  let savedId = "";
+  const result = await runAction<undefined>(async () => {
+    const ctx = await requireTenantContext("operations.manage");
+    savedId = (await createPurchase(ctx, { ...fields(formData), lines })).receipt.id;
+  }, formData);
+  if (result.status !== "success") return result;
+  revalidatePath("/purchases");
+  revalidatePath("/inventory");
+  redirect(
+    formData.get("intent") === "next"
+      ? `/purchases/new?notice=purchased&last=${savedId}`
+      : `/purchases/receipts/${savedId}?notice=posted`,
+  );
 }
 
 // ───────────────────────── Goods receipts ─────────────────────────

@@ -11,12 +11,10 @@ import type { ServiceCtx } from "./common";
 // Setting a new opening balance posts only the difference, so the history stays append-only.
 //
 // Amounts here are "as the user thinks of them":
-// - customer × company: what the customer owes us (negative = advance paid);
+// - customer (one account): what the customer owes us (negative = advance paid);
 // - company: what we owe the company (negative = they owe us).
 
-type Party =
-  | { kind: "CUSTOMER"; customerId: string; companyId: string }
-  | { kind: "COMPANY"; companyId: string };
+type Party = { kind: "CUSTOMER"; customerId: string } | { kind: "COMPANY"; companyId: string };
 
 type DecimalValue = Prisma.Decimal | number | string;
 
@@ -24,7 +22,7 @@ const D = (v: DecimalValue) => new Prisma.Decimal(v);
 
 function partyWhere(party: Party) {
   return party.kind === "CUSTOMER"
-    ? { partyType: "CUSTOMER" as const, customerId: party.customerId, companyId: party.companyId }
+    ? { partyType: "CUSTOMER" as const, customerId: party.customerId }
     : { partyType: "COMPANY" as const, companyId: party.companyId };
 }
 
@@ -37,27 +35,15 @@ export async function getOpeningBalance(
   party: Party,
 ): Promise<Prisma.Decimal> {
   const sum = await tx.ledgerEntry.aggregate({
-    where: { ...partyWhere(party), type: "OPENING_BALANCE" },
+    // A customer's old paper bills are OPENING_BALANCE entries too, but not their opening balance.
+    where: {
+      ...partyWhere(party),
+      type: "OPENING_BALANCE",
+      ...(party.kind === "CUSTOMER" ? { referenceType: null } : {}),
+    },
     _sum: { debit: true, credit: true },
   });
   return toUserAmount(party, D(sum._sum.debit ?? 0).sub(sum._sum.credit ?? 0));
-}
-
-/** Opening balance per company for one customer (companies without an entry are omitted). */
-export async function getCustomerOpeningBalances(
-  tx: Pick<TenantTx, "ledgerEntry">,
-  customerId: string,
-) {
-  const groups = await tx.ledgerEntry.groupBy({
-    by: ["companyId"],
-    where: { partyType: "CUSTOMER", customerId, type: "OPENING_BALANCE" },
-    _sum: { debit: true, credit: true },
-  });
-  const result: Record<string, Prisma.Decimal> = {};
-  for (const g of groups) {
-    if (g.companyId) result[g.companyId] = D(g._sum.debit ?? 0).sub(g._sum.credit ?? 0);
-  }
-  return result;
 }
 
 /**

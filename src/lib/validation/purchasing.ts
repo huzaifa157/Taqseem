@@ -143,6 +143,31 @@ export const reverseSchema = z.object({
 export const dueDateSchema = z.object({ billId: idSchema, dueDate: dateSchema("due date") });
 
 export type PurchaseOrderInput = z.infer<typeof purchaseOrderSchema>;
+/**
+ * A purchase: the goods that came in (stock + company bill, as a goods receipt with no purchase
+ * order) and what was paid for them now (blank or 0: nothing, all on the company's account).
+ */
+export const purchaseSchema = goodsReceiptSchema
+  .omit({ purchaseOrderId: true, dueDate: true })
+  .extend({
+    paidAmount: optionalMoneySchema("amount paid"),
+    method: z.enum(PAYMENT_METHODS).default("CASH"),
+    reference: optionalText(80),
+    chequeNo: optionalText(30),
+    bankName: optionalText(60),
+    chequeDate: optionalDateSchema("cheque date"),
+  })
+  .superRefine((p, ctx) => {
+    if (!p.paidAmount || Number(p.paidAmount) <= 0 || p.method !== "CHEQUE") return;
+    if (!p.chequeNo)
+      ctx.addIssue({ code: "custom", path: ["chequeNo"], message: "Enter the cheque number" });
+    if (!p.bankName)
+      ctx.addIssue({ code: "custom", path: ["bankName"], message: "Enter the bank" });
+    if (!p.chequeDate)
+      ctx.addIssue({ code: "custom", path: ["chequeDate"], message: "Enter the cheque date" });
+  });
+
+export type PurchaseInput = z.infer<typeof purchaseSchema>;
 export type GoodsReceiptInput = z.infer<typeof goodsReceiptSchema>;
 export type CompanyPaymentInput = z.infer<typeof companyPaymentSchema>;
 export type ClaimInput = z.infer<typeof claimSchema>;

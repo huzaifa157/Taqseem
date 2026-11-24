@@ -4,6 +4,7 @@ const NOTICES: Record<string, string> = {
   saved: "Saved.",
   deleted: "Deleted.",
   posted: "Posted.",
+  purchased: "Purchase saved: stock added, company bill and payment posted.",
   booked: "Order booked.",
   sold: "Counter sale saved. Stock is out and the bill is posted to the customer ledger.",
   corrected: "Counter sale corrected. The bill has a new revision; print it again.",

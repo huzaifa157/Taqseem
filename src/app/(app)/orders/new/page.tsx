@@ -12,6 +12,7 @@ import { parseDateRange } from "@/server/services/purchasing/filters";
 import { areasForOrders } from "@/server/services/master/areas";
 import { warehouseOptions } from "@/server/services/master/warehouses";
 import { customersForOrders } from "@/server/services/sales/orders";
+import { addToBalanceAction } from "@/server/payment-actions";
 
 export const metadata: Metadata = { title: "New order" };
 
@@ -69,6 +70,7 @@ export default async function NewOrderPage({ searchParams }: PageProps<"/orders/
         warehouses={warehouses}
         areas={areas}
         canOverrideCredit={can(ctx.user.role, "orders.overrideCreditLimit")}
+        addToBalance={can(ctx.user.role, "payments.manage") ? addToBalanceAction : undefined}
         initial={{
           orderDate: toDateInput(today),
           deliveryDate: toDateInput(date ?? addDays(today, 1)),

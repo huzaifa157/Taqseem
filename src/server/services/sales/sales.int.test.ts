@@ -9,9 +9,10 @@ import { createArea } from "../master/areas";
 import type { ServiceCtx } from "../master/common";
 import { createCompany } from "../master/companies";
 import { createCustomer } from "../master/customers";
-import { createProduct } from "../master/products";
+import { createProduct, updateProduct } from "../master/products";
 import { createWarehouse } from "../master/warehouses";
 import { createGoodsReceipt } from "../purchasing/goods-receipts";
+import { salesPerCompany } from "../dashboard-charts";
 import { globalSearch } from "../search";
 import { getBillView } from "./bills";
 import {
@@ -95,7 +96,7 @@ async function setup() {
     type: "RETAILER",
     areaId: area.id,
     creditLimit: "10000",
-    openingBalances: { [crunchy.id]: "3000", [golden.id]: "1000" },
+    openingBalance: "4000",
   });
   return { ctx, staff, main, other, crunchy, golden, chips, nimko, far, customer };
 }
@@ -474,17 +475,6 @@ describe("bill view", () => {
       view.bill.netAmount.toFixed(2),
       view.totalDue.toFixed(2),
     ]).toEqual(["4000.00", "678.00", "4678.00"]);
-    expect(
-      view.sections.map((s) => [
-        s.companyName,
-        s.previous.toFixed(2),
-        s.thisBill.toFixed(2),
-        s.totalDue.toFixed(2),
-      ]),
-    ).toEqual([
-      ["Crunchy", "3000.00", "448.00", "3448.00"],
-      ["Golden", "1000.00", "230.00", "1230.00"],
-    ]);
     expect(view.lines.map((l) => l.code).sort()).toEqual(["CB01", "GC01"]);
     // No credit limit: the minimum is what was left over from before.
     expect(view.minimumPayment.toFixed(2)).toBe("4000.00");
@@ -499,17 +489,13 @@ describe("bill view", () => {
 });
 
 describe("order entry context", () => {
-  it("gives pending per company, open orders, products with stock, and the last order", async () => {
+  it("gives what the customer owes, open orders, products with stock, and the last order", async () => {
     await createSalesOrder(t.staff, order([{ productId: t.chips.id, quantity: "2" }]));
     const c = await orderEntryContext(t.ctx, t.customer.id);
     expect([c.pending, c.openOrders, c.customer.creditLimit]).toEqual([
       "4000.00",
       "448.00",
       "10000.00",
-    ]);
-    expect(c.pendingByCompany.map((p) => [p.companyName, p.amount]).sort()).toEqual([
-      ["Crunchy", "3000.00"],
-      ["Golden", "1000.00"],
     ]);
     expect(c.products.map((p) => p.code)).toEqual(["CB01", "GC01"]);
     expect(c.products[0]).toMatchObject({ available: 336, tiers: [{ minQuantity: 300 }] });
@@ -558,5 +544,66 @@ describe("search from anywhere", () => {
     const staff = (await globalSearch(t.staff, "ali khan")).find((h) => h.kind === "Customer")!;
     expect(owner.href).toBe(`/customers/${t.customer.id}/statement`);
     expect(staff.href).toBe("/orders?q=Ali%20Khan");
+  });
+});
+
+describe("product set up under the wrong company", () => {
+  const productInput = (companyId: string) => ({
+    companyId,
+    code: "CB01",
+    name: "Item CB01",
+    purchaseRate: "100",
+    saleRate: "228",
+    discountType: "AMOUNT_PER_UNIT",
+    discountValue: "4",
+    slabs: [{ fromDozens: "25", value: "8" }],
+    effectiveFrom: "2026-10-01",
+  });
+
+  it("moves to a company of the same warehouse, with its stock and open orders", async () => {
+    const r = await createSalesOrder(t.staff, order([{ productId: t.chips.id, quantity: "2" }]));
+    await updateProduct(t.ctx, t.chips.id, productInput(t.golden.id));
+
+    const product = await prisma.product.findUniqueOrThrow({ where: { id: t.chips.id } });
+    expect(product.companyId).toBe(t.golden.id);
+    // The stock stays where it is: it belongs to the product and the warehouse.
+    expect((await stockPositions(t.ctx.db, t.main.id, [t.chips.id])).get(t.chips.id)!.onHand).toBe(
+      360,
+    );
+    // The booked order's line moved with it; its bill is not touched.
+    const line = await prisma.salesOrderLine.findFirstOrThrow({ where: { salesOrderId: r.id } });
+    expect(line.companyId).toBe(t.golden.id);
+    const bill = await prisma.bill.findFirstOrThrow({ where: { salesOrderId: r.id } });
+    expect(bill.currentRevision).toBe(1);
+    // Company reports read the product's current company, so its sales now count for Golden
+    // (a bill saved under Crunchy, with a 48 special discount).
+    const perCompany = await salesPerCompany(t.ctx, [
+      {
+        revisions: [
+          {
+            lines: [{ productId: t.chips.id, netAmount: "448.00" }],
+            companyTotals: [{ companyId: t.crunchy.id, specialDiscount: "48.00" }],
+          },
+        ],
+      },
+    ]);
+    expect([...perCompany].map(([c, v]) => [c, v.toFixed(2)])).toEqual([[t.golden.id, "400.00"]]);
+    // What was posted stays as recorded: the purchase is still Crunchy's.
+    const receipt = await prisma.goodsReceiptLine.findFirstOrThrow({
+      where: { productId: t.chips.id },
+      include: { goodsReceipt: true },
+    });
+    expect(receipt.goodsReceipt.companyId).toBe(t.crunchy.id);
+    const audit = await prisma.auditLog.findFirstOrThrow({
+      where: { entityType: "Product", entityId: t.chips.id, action: "UPDATE" },
+    });
+    expect(audit.newValue).toMatchObject({ company: "Golden", movedOpenOrders: [r.number] });
+  });
+
+  it("cannot move to another warehouse's company while it has stock there", async () => {
+    const faraway = await t.ctx.db.company.findFirstOrThrow({ where: { name: "Faraway" } });
+    await expect(updateProduct(t.ctx, t.chips.id, productInput(faraway.id))).rejects.toThrow(
+      /another warehouse/,
+    );
   });
 });

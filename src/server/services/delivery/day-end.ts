@@ -244,11 +244,9 @@ export async function saveDayEnd(ctx: ServiceCtx, input: unknown) {
         discountValue: l.discountValue.toString(),
       }));
       const kept = deliveredLines(booked, results);
-      // As posted at dispatch: the booked lines less each company's share of the special discount.
-      const bookedByCompany = new Map(
-        [...billTotals(order.lines, order.specialDiscount.toString()).byCompany].map(
-          ([companyId, t]) => [companyId, D(t.netAmount.toString())],
-        ),
+      // As posted at dispatch: the booked lines less the special discount.
+      const postedAmount = D(
+        billTotals(order.lines, order.specialDiscount.toString()).total.netAmount.toString(),
       );
       // The special discount stays (never more than what was kept).
       const newTotals = billTotals(kept, order.specialDiscount.toString());
@@ -279,20 +277,15 @@ export async function saveDayEnd(ctx: ServiceCtx, input: unknown) {
           kept,
           order.specialDiscount.toString(),
         );
-        for (const [companyId, old] of bookedByCompany) {
-          const now = D((newTotals.byCompany.get(companyId)?.netAmount ?? 0).toString());
-          const less = old.sub(now);
-          if (less.isZero()) continue;
+        const less = postedAmount.sub(newTotals.total.netAmount.toString());
+        if (!less.isZero())
           await tx.ledgerEntry.create({
             data: {
               tenantId: ctx.user.tenantId,
               partyType: "CUSTOMER",
               customerId: order.customerId,
-              companyId,
               type: "BILL_REVISION",
               entryDate: date,
-              // Less, usually; a company can get a smaller share of the special discount when
-              // another company's goods come back (a few paisa more, as a debit).
               ...(less.gt(0) ? { credit: less } : { debit: less.neg() }),
               description: `Bill #${bill.number} revised at day-end (returns / damage)`,
               referenceType: "Bill",
@@ -300,18 +293,12 @@ export async function saveDayEnd(ctx: ServiceCtx, input: unknown) {
               createdById: ctx.user.id,
             },
           });
-        }
       }
 
       // Goods from earlier sales given back at this stop (credited before the payments are split).
       const extras = await postExtraReturns(tx, ctx, order, data.extras, date);
 
-      // Payments collected by the driver.
-      // An advance (the customer owes nothing) goes to this order's companies.
-      const fallbackCompanies: [string, Prisma.Decimal][] =
-        newTotals.byCompany.size > 0
-          ? [...newTotals.byCompany].map(([c, t]) => [c, D(t.netAmount.toString())])
-          : [...bookedByCompany];
+      // Payments collected by the driver (anything over what is owed is an advance).
       const collected: { method: PaymentMethod; amount: string; number: number }[] = [];
       const pay = async (
         method: PaymentMethod,
@@ -329,7 +316,6 @@ export async function saveDayEnd(ctx: ServiceCtx, input: unknown) {
           amount: D(amount),
           collectedVia: "DELIVERY",
           salesOrderId: order.id,
-          fallbackCompanies,
           ...extra,
         });
         collected.push({ method, amount, number: payment.number });

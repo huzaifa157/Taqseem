@@ -9,7 +9,6 @@ import { billDocuments } from "@/components/sales/bill-document";
 import { Badge } from "@/components/ui/badge";
 import { filterParam } from "@/lib/list-params";
 import { paperHint } from "@/lib/print";
-import { cn } from "@/lib/utils";
 import { requireTenantContext } from "@/server/auth/session";
 import { getBillView } from "@/server/services/sales/bills";
 import { getPrintProfile } from "@/server/services/settings";
@@ -18,18 +17,11 @@ export const metadata: Metadata = { title: "Bill" };
 
 export default async function BillPage({ params, searchParams }: PageProps<"/orders/[id]/bill">) {
   const [{ id }, sp] = await Promise.all([params, searchParams]);
-  const split = filterParam(sp, "view") === "company";
   const ctx = await requireTenantContext("operations.manage");
   const [view, profile] = await Promise.all([
     orNotFound(getBillView(ctx, id)),
     getPrintProfile(ctx),
   ]);
-  const tab = (active: boolean) =>
-    cn(
-      "rounded-md border px-3 py-1.5 text-sm",
-      active ? "bg-foreground text-background" : "hover:bg-accent",
-    );
-
   return (
     <div>
       <PrintToolbar
@@ -40,20 +32,6 @@ export default async function BillPage({ params, searchParams }: PageProps<"/ord
         }
         hint={paperHint(profile.print)}
       >
-        <Link
-          href={`/orders/${id}/bill`}
-          className={tab(!split)}
-          aria-current={!split ? "page" : undefined}
-        >
-          Full bill
-        </Link>
-        <Link
-          href={`/orders/${id}/bill?view=company`}
-          className={tab(split)}
-          aria-current={split ? "page" : undefined}
-        >
-          Split by company ({view.sections.length})
-        </Link>
         {view.bill.status === "REVERSED" ? <Badge variant="outline">Cancelled</Badge> : null}
         {view.order.fulfilment === "COUNTER" && view.order.status === "DELIVERED" ? (
           <Link
@@ -75,7 +53,7 @@ export default async function BillPage({ params, searchParams }: PageProps<"/ord
       </PrintToolbar>
       <BillSheets
         settings={profile.print}
-        bills={billDocuments(view, profile.business, split, profile.print)}
+        bills={billDocuments(view, profile.business, profile.print)}
       />
       {filterParam(sp, "print") === "1" ? <AutoPrint /> : null}
     </div>

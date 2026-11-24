@@ -518,90 +518,40 @@ export function CompactBillDocument({
 }
 
 /**
- * The documents for one bill: the full bill, or one per company when split; compact or full as
- * the print settings say, and laid out in pages when printed one per sheet.
+ * The document for one bill, compact or full as the print settings say, and laid out in pages
+ * when printed one per sheet. Customers have one account, so a bill is never split by company.
  */
 export function billDocuments(
   view: BillView,
   business: PrintProfile["business"],
-  split: boolean,
   settings: PrintSettings,
 ) {
-  const pagination = billPagination(settings);
-  if (usesCompactBill(settings)) {
-    if (!split)
-      return [
-        {
-          key: view.bill.id,
-          node: (
-            <CompactBillDocument
-              view={view}
-              business={business}
-              lines={view.lines}
-              thisBill={view.bill.netAmount}
-              specialDiscount={view.bill.specialDiscount}
-              previous={view.previous}
-              totalDue={view.totalDue}
-              minimum={view.minimumPayment}
-              paid={view.paid}
-            />
-          ),
-        },
-      ];
-    return view.sections.map((s) => ({
-      key: `${view.bill.id}-${s.companyId}`,
-      node: (
-        <CompactBillDocument
-          view={view}
-          business={business}
-          title={s.companyName}
-          lines={s.lines}
-          thisBill={s.thisBill}
-          specialDiscount={s.specialDiscount}
-          previous={s.previous}
-          totalDue={s.totalDue}
-        />
-      ),
-    }));
-  }
-  if (!split) {
-    return [
-      {
-        key: view.bill.id,
-        node: (
-          <BillDocument
-            view={view}
-            business={business}
-            lines={view.lines}
-            thisBill={view.bill.netAmount}
-            specialDiscount={view.bill.specialDiscount}
-            previous={view.previous}
-            oldBalance={view.oldBalance}
-            totalDue={view.totalDue}
-            minimum={view.minimumPayment}
-            paid={view.paid}
-            showCompany={view.sections.length > 1}
-            pagination={pagination}
-          />
-        ),
-      },
-    ];
-  }
-  return view.sections.map((s) => ({
-    key: `${view.bill.id}-${s.companyId}`,
-    node: (
-      <BillDocument
-        view={view}
-        business={business}
-        title={`${s.companyName} portion`}
-        lines={s.lines}
-        thisBill={s.thisBill}
-        specialDiscount={s.specialDiscount}
-        previous={s.previous}
-        totalDue={s.totalDue}
-        showCompany={false}
-        pagination={pagination}
-      />
-    ),
-  }));
+  const node = usesCompactBill(settings) ? (
+    <CompactBillDocument
+      view={view}
+      business={business}
+      lines={view.lines}
+      thisBill={view.bill.netAmount}
+      specialDiscount={view.bill.specialDiscount}
+      previous={view.previous}
+      totalDue={view.totalDue}
+      minimum={view.minimumPayment}
+      paid={view.paid}
+    />
+  ) : (
+    <BillDocument
+      view={view}
+      business={business}
+      lines={view.lines}
+      thisBill={view.bill.netAmount}
+      specialDiscount={view.bill.specialDiscount}
+      previous={view.previous}
+      totalDue={view.totalDue}
+      minimum={view.minimumPayment}
+      paid={view.paid}
+      showCompany={false}
+      pagination={billPagination(settings)}
+    />
+  );
+  return [{ key: view.bill.id, node }];
 }

@@ -282,13 +282,12 @@ export async function importSheetData(ctx: ServiceCtx, kind: ImportKind) {
   }
   return {
     title: TITLES[kind],
-    headers: templateHeaders(kind, kind === "customers" ? companyNames : []),
+    headers: templateHeaders(kind),
     examples: templateExamples(kind, {
       warehouse: warehouses[0]?.name,
       company: companies[0]?.name,
       area: areas[0]?.name,
       areaWarehouse: areas[0]?.warehouse.name,
-      companies: companyNames,
     }),
     notes: [
       `Fill in the "Import" sheet: one row per record under the header row. Rows starting with ${EXAMPLE_MARK} are examples and are never imported; delete them or leave them.`,

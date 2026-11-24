@@ -34,6 +34,8 @@ import { formatDozens, PACKETS_PER_HALF_DOZEN, parseQuantity, quantityText } fro
 import { orderEntryContextAction } from "@/server/sales-actions";
 import type { OrderEntryContext } from "@/server/services/sales/orders";
 
+import { AddToBalanceButton } from "@/components/payments/add-to-balance";
+
 import { Combobox, rankText } from "./combobox";
 
 type CustomerOption = {
@@ -118,6 +120,7 @@ export function OrderEntry({
   areas = [],
   header,
   notice,
+  addToBalance,
 }: {
   /** The page's top bar: back link, title and a short note (the form adds its own boxes). */
   header: { backHref: string; backLabel: string; title: string; description?: string };
@@ -153,6 +156,8 @@ export function OrderEntry({
   mode?: "order" | "counter";
   /** For a new customer typed on the order: their area decides the warehouse. */
   areas?: { id: string; name: string; warehouseId: string; warehouseName: string }[];
+  /** "+ Add to balance" next to the customer's balance (owner and accountant only). */
+  addToBalance?: (state: ActionState, formData: FormData) => Promise<ActionState>;
 }) {
   const counter = mode === "counter";
   const isNew = !initial.orderId;
@@ -246,7 +251,9 @@ export function OrderEntry({
   // Product whose quantity box should get focus once its new line has rendered.
   const pendingFocus = useRef<string | null>(null);
 
-  // Load the customer panel and product list whenever the customer (or warehouse) changes.
+  // Load the customer panel and product list whenever the customer (or warehouse) changes, and
+  // again after something is added to their balance.
+  const [reloadKey, setReloadKey] = useState(0);
   const isNewCustomer = newCustomer !== null;
   useEffect(() => {
     if (!customerId && !(isNewCustomer && newWarehouseId)) return;
@@ -263,7 +270,7 @@ export function OrderEntry({
         setContext(result);
       }
     });
-  }, [customerId, warehouseId, initial.orderId, isNewCustomer, newWarehouseId]);
+  }, [customerId, warehouseId, initial.orderId, isNewCustomer, newWarehouseId, reloadKey]);
 
   useEffect(() => {
     if (pendingFocus.current) {
@@ -289,7 +296,7 @@ export function OrderEntry({
       });
   }
   const specialRead = readSpecialDiscount(special, billTotals(priced).total.netAmount);
-  const { total, byCompany } = billTotals(priced, specialRead.discount);
+  const { total } = billTotals(priced, specialRead.discount);
   const lineDiscounts = total.discountAmount.sub(total.specialDiscount);
   const specialError = specialRead.error ?? fieldError(state, "specialDiscount");
   const paidNow = paidFull
@@ -712,8 +719,12 @@ export function OrderEntry({
                 credit={credit}
                 counter={counter}
                 extra={
-                  context && !newCustomer ? (
-                    <CompanyBalances context={context} byCompany={byCompany} />
+                  addToBalance && context && !newCustomer && customerId ? (
+                    <AddToBalanceButton
+                      action={addToBalance}
+                      customerId={customerId}
+                      onAdded={() => setReloadKey((k) => k + 1)}
+                    />
                   ) : null
                 }
               />
@@ -1506,44 +1517,6 @@ function BalancePanel({
         {extra ? <div className="ml-auto">{extra}</div> : null}
       </dl>
     </section>
-  );
-}
-
-/** "Balances by company": what is pending per company, and this order's split when it has several. */
-function CompanyBalances({
-  context,
-  byCompany,
-}: {
-  context: OrderEntryContext;
-  byCompany: Map<string, { netAmount: { toString(): string } }>;
-}) {
-  const thisOrder = [...byCompany];
-  if (context.pendingByCompany.length === 0 && thisOrder.length < 2) return null;
-  return (
-    <details className="group relative text-xs">
-      <summary className="text-muted-foreground hover:text-foreground w-fit cursor-pointer list-none select-none">
-        Balances by company <span className="inline-block group-open:rotate-180">▾</span>
-      </summary>
-      <dl className="bg-popover text-popover-foreground absolute top-full right-0 z-30 mt-1 grid w-max max-w-xl gap-x-6 gap-y-1 rounded-md border p-3 shadow-md sm:grid-cols-2">
-        {context.pendingByCompany.map((p) => (
-          <div key={p.companyId} className="flex justify-between gap-3">
-            <dt className="text-muted-foreground">Pending · {p.companyName}</dt>
-            <dd className="font-medium tabular-nums">{formatMoney(p.amount)}</dd>
-          </div>
-        ))}
-        {thisOrder.length > 1
-          ? thisOrder.map(([companyId, t]) => (
-              <div key={companyId} className="flex justify-between gap-3">
-                <dt className="text-muted-foreground">
-                  This order ·{" "}
-                  {context.products.find((p) => p.companyId === companyId)?.companyName}
-                </dt>
-                <dd className="font-medium tabular-nums">{formatMoney(t.netAmount)}</dd>
-              </div>
-            ))
-          : null}
-      </dl>
-    </details>
   );
 }
 

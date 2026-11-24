@@ -62,12 +62,7 @@ const SAVERS: Record<MasterEntity, Saver> = {
     return id ? updateProduct(ctx, id, input) : createProduct(ctx, input);
   },
   Customer: (ctx, id, fd) => {
-    const all = fields(fd);
-    const openingBalances: Record<string, string> = {};
-    for (const [key, value] of Object.entries(all)) {
-      if (key.startsWith("opening:")) openingBalances[key.slice("opening:".length)] = value;
-    }
-    const input = { ...all, openingBalances };
+    const input = fields(fd);
     return id ? updateCustomer(ctx, id, input) : createCustomer(ctx, input);
   },
 };

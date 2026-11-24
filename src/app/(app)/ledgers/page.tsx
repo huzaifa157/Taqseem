@@ -6,9 +6,12 @@ import { ListToolbar } from "@/components/list/list-toolbar";
 import { Pagination } from "@/components/list/pagination";
 import { RequirePermission } from "@/components/layout/no-access";
 import { PageHeader } from "@/components/layout/page-header";
+import { AddToBalanceForm } from "@/components/payments/add-to-balance";
 import { formatMoney } from "@/lib/format";
 import { listParamsSchema } from "@/lib/list-params";
+import { can } from "@/server/auth/permissions";
 import { requireTenantContext } from "@/server/auth/session";
+import { addToBalanceAction } from "@/server/payment-actions";
 import { listCompanies } from "@/server/services/master/companies";
 import { listCustomers } from "@/server/services/master/customers";
 
@@ -33,13 +36,29 @@ async function Ledgers({ searchParams }: PageProps<"/ledgers">) {
   const sp = await searchParams;
   const params = listParamsSchema.parse(sp);
   const ctx = await requireTenantContext("ledgers.view");
-  const [customers, companies] = await Promise.all([
+  const canAdd = can(ctx.user.role, "payments.manage");
+  const [customers, companies, everyone] = await Promise.all([
     listCustomers(ctx, params, sp),
     listCompanies(ctx, listParamsSchema.parse({ status: params.status }), {}),
+    // For "Add to a customer's balance": every active customer, to search.
+    canAdd
+      ? ctx.db.customer.findMany({
+          where: { isActive: true },
+          orderBy: { name: "asc" },
+          select: {
+            id: true,
+            name: true,
+            shopName: true,
+            phone: true,
+            area: { select: { name: true } },
+          },
+        })
+      : Promise.resolve([]),
   ]);
 
   return (
     <div className="space-y-8">
+      {canAdd ? <AddToBalanceForm action={addToBalanceAction} customers={everyone} /> : null}
       <section aria-labelledby="company-ledgers">
         <h2 id="company-ledgers" className="mb-2 text-lg font-semibold">
           Companies
@@ -61,13 +80,6 @@ async function Ledgers({ searchParams }: PageProps<"/ledgers">) {
                 <Td className="whitespace-nowrap">
                   <Link href={`/companies/${c.id}/ledger`} className="underline underline-offset-4">
                     Ledger
-                  </Link>
-                  <span className="text-muted-foreground"> · </span>
-                  <Link
-                    href={`/companies/${c.id}/receivables`}
-                    className="underline underline-offset-4"
-                  >
-                    Customers owe
                   </Link>
                 </Td>
               </tr>

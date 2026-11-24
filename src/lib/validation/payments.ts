@@ -23,18 +23,6 @@ export const customerPaymentSchema = z
     bankName: optionalText(60),
     chequeDate: optionalDateSchema("cheque date"),
     note: optionalText(500),
-    /** auto = oldest debt first; company = the amounts per company below. */
-    allocationMode: z.enum(["auto", "company"]).default("auto"),
-    companyAmounts: z
-      .array(
-        z.object({
-          // "" = the old balance (see OLD_BALANCE in src/lib/payments.ts).
-          companyId: z.union([idSchema, z.literal("")]),
-          amount: moneySchema("company amount"),
-        }),
-      )
-      .max(100)
-      .default([]),
   })
   .superRefine((p, ctx) => {
     if (p.method === "CHEQUE") {

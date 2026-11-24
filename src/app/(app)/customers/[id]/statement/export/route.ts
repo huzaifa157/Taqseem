@@ -5,7 +5,7 @@ import { defaultLedgerRange, parseDateRange } from "@/server/services/purchasing
 import { getCustomerStatement } from "@/server/services/statements";
 import { xBold, xlsxResponse, xMoney } from "@/server/xlsx";
 
-/** Customer statement (all companies or one) as an Excel file, same rows as the screen. */
+/** Customer statement (one account) as an Excel file, same rows as the screen. */
 export async function GET(
   request: Request,
   { params }: RouteContext<"/customers/[id]/statement/export">,
@@ -17,25 +17,20 @@ export async function GET(
   const range = parsed.from || parsed.to ? parsed : defaultLedgerRange(businessToday());
   let s;
   try {
-    s = await getCustomerStatement(ctx, id, { ...range, companyId: sp.companyId || undefined });
+    s = await getCustomerStatement(ctx, id, range);
   } catch (error) {
     if (error instanceof ServiceError) return new Response("Not found", { status: 404 });
     throw error;
   }
   const d = (x?: Date) => (x ? toDateInput(x) : "");
   const rows = [
-    [
-      xBold(
-        `${s.customer.name}${s.company ? ` · ${s.company.name}` : ""} — statement ${d(range.from)} to ${d(range.to)}`,
-      ),
-    ],
+    [xBold(`${s.customer.name} — statement ${d(range.from)} to ${d(range.to)}`)],
     [],
-    ["Date", "Entry", "Details", "Company", "Bills (+)", "Received (−)", "Balance due"].map(xBold),
+    ["Date", "Entry", "Details", "Bills (+)", "Received (−)", "Balance due"].map(xBold),
     [
       { value: d(range.from) },
       { value: "Opening" },
       { value: "Balance brought forward" },
-      null,
       null,
       null,
       xMoney(s.opening),
@@ -44,12 +39,11 @@ export async function GET(
       { value: d(r.entryDate) },
       { value: r.typeLabel },
       { value: r.description },
-      { value: r.companyName },
       r.debit.isZero() ? null : xMoney(r.debit),
       r.credit.isZero() ? null : xMoney(r.credit),
       xMoney(r.balance),
     ]),
-    [{ value: d(range.to) }, { value: "Closing" }, null, null, null, null, xMoney(s.closing)],
+    [{ value: d(range.to) }, { value: "Closing" }, null, null, null, xMoney(s.closing)],
   ];
-  return xlsxResponse(rows, [12, 16, 46, 20, 14, 14, 16], `${s.customer.name}-statement`);
+  return xlsxResponse(rows, [12, 16, 52, 14, 14, 16], `${s.customer.name}-statement`);
 }

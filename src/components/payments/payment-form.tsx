@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { type ActionState, fieldError, idleState } from "@/lib/action-state";
 import { formatMoney } from "@/lib/format";
 import { localPhone } from "@/lib/phone";
-import { allocateOldestFirst, OLD_BALANCE } from "@/lib/payments";
+import { allocateOldestFirst } from "@/lib/payments";
 import type { PaymentContext } from "@/server/services/payments/customer-payments";
 
 type Customer = {
@@ -36,9 +36,9 @@ const amountOf = (v: string) =>
     : null;
 
 /**
- * Payment received at the office. Pick the customer to see what they owe per company and per bill;
- * "Oldest debt first" previews exactly how the server will apply the amount, "Split by company"
- * takes an amount per company.
+ * Payment received at the office. Pick the customer to see what they owe (one account) and their
+ * open bills; the table previews exactly how the server applies the amount: old balance first,
+ * then the oldest bills; anything left over is an advance.
  */
 export function CustomerPaymentForm({
   action,
@@ -60,9 +60,7 @@ export function CustomerPaymentForm({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, startLoading] = useTransition();
   const [method, setMethod] = useState("CASH");
-  const [mode, setMode] = useState<"auto" | "company">("auto");
   const [amount, setAmount] = useState("");
-  const [split, setSplit] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!customerId) return;
@@ -79,30 +77,9 @@ export function CustomerPaymentForm({
   }, [customerId, loadContext]);
 
   const value = amountOf(amount);
-  const debt = context
-    ? {
-        unbilled: new Map(context.unbilled.map(([k, v]) => [k, new Decimal(v)])),
-        bills: context.bills.map((b) => ({
-          ...b,
-          slices: b.slices.map((s) => ({ companyId: s.companyId, outstanding: s.outstanding })),
-        })),
-      }
-    : null;
-  const preview =
-    value && debt && mode === "auto" ? allocateOldestFirst(value, debt, context!.advanceTo) : null;
-  const applied = (billId: string, companyId: string) =>
-    preview?.allocations.find((a) => a.billId === billId && a.companyId === companyId)?.amount;
-  const companyName = new Map([
-    [OLD_BALANCE, "Old balance"],
-    ...(context?.companies.map((c) => [c.id, c.name] as const) ?? []),
-  ]);
-  const splitTotal = Object.values(split).reduce((s, v) => s.add(amountOf(v) ?? 0), new Decimal(0));
-  const owing = [
-    ...(context && context.oldBalance !== "0.00"
-      ? [{ name: "Old balance", owed: context.oldBalance }]
-      : []),
-    ...(context?.companies.filter((c) => c.owed !== "0.00") ?? []),
-  ];
+  const debt = context ? { unbilled: new Decimal(context.unbilled), bills: context.bills } : null;
+  const preview = value && debt ? allocateOldestFirst(value, debt) : null;
+  const applied = (billId: string) => preview?.allocations.find((a) => a.billId === billId)?.amount;
 
   return (
     <form action={(fd) => formAction(withRequestId(fd))} className="max-w-5xl space-y-6">
@@ -123,7 +100,6 @@ export function CustomerPaymentForm({
               onClick={() => {
                 setCustomerId("");
                 setContext(null);
-                setSplit({});
               }}
             >
               Change customer
@@ -171,12 +147,6 @@ export function CustomerPaymentForm({
         <>
           <div className="text-sm">
             Owes now <strong className="tabular-nums">{formatMoney(context.pending)}</strong>
-            {owing.length > 0 ? (
-              <span className="text-muted-foreground">
-                {" "}
-                ({owing.map((c) => `${c.name} ${formatMoney(c.owed)}`).join(" · ")})
-              </span>
-            ) : null}
           </div>
 
           <div className="grid gap-4 sm:grid-cols-4">
@@ -255,177 +225,71 @@ export function CustomerPaymentForm({
             />
           </div>
 
-          <fieldset className="space-y-3">
-            <legend className="font-medium">Apply to</legend>
-            <div className="flex flex-wrap gap-4 text-sm">
-              <label className="flex items-center gap-2">
-                <input
-                  type="radio"
-                  name="allocationMode"
-                  value="auto"
-                  checked={mode === "auto"}
-                  onChange={() => setMode("auto")}
-                />
-                Oldest debt first
-              </label>
-              <label className="flex items-center gap-2">
-                <input
-                  type="radio"
-                  name="allocationMode"
-                  value="company"
-                  checked={mode === "company"}
-                  onChange={() => setMode("company")}
-                />
-                Split by company
-              </label>
-            </div>
-
-            {mode === "auto" ? (
-              <div className="overflow-x-auto rounded-lg border">
-                <table className="w-full text-sm">
-                  <thead className="bg-muted/50 text-left">
+          <section aria-labelledby="apply-heading" className="space-y-3">
+            <h2 id="apply-heading" className="font-medium">
+              Applied to <span className="text-muted-foreground font-normal">(oldest first)</span>
+            </h2>
+            <div className="overflow-x-auto rounded-lg border">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50 text-left">
+                  <tr>
+                    <th className="px-3 py-2 font-medium">Owed for</th>
+                    <th className="px-3 py-2 text-right font-medium">Unpaid</th>
+                    <th className="px-3 py-2 text-right font-medium">This payment</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {context.unbilled === "0.00" && context.bills.length === 0 ? (
                     <tr>
-                      <th className="px-3 py-2 font-medium">Owed for</th>
-                      <th className="px-3 py-2 font-medium">Company</th>
-                      <th className="px-3 py-2 text-right font-medium">Unpaid</th>
-                      <th className="px-3 py-2 text-right font-medium">This payment</th>
+                      <td colSpan={3} className="text-muted-foreground px-3 py-3 text-center">
+                        Nothing owed. The payment is kept as an advance.
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {context.unbilled.length === 0 && context.bills.length === 0 ? (
-                      <tr>
-                        <td colSpan={4} className="text-muted-foreground px-3 py-3 text-center">
-                          Nothing owed. The payment is kept as an advance.
-                        </td>
-                      </tr>
-                    ) : null}
-                    {context.unbilled.map(([companyId, owed]) => (
-                      <tr key={`u-${companyId}`} className="border-t">
-                        <td className="px-3 py-1.5">
-                          {companyId === OLD_BALANCE ? "Old balance" : "Opening balance"}
-                        </td>
-                        <td className="px-3 py-1.5">
-                          {companyId === OLD_BALANCE ? "—" : companyName.get(companyId)}
-                        </td>
-                        <td className="px-3 py-1.5 text-right tabular-nums">{formatMoney(owed)}</td>
-                        <td className="px-3 py-1.5 text-right tabular-nums">
-                          {preview && value
-                            ? formatMoney(
-                                Decimal.min(
-                                  new Decimal(owed),
-                                  // share of the opening part (opening balances are paid first)
-                                  (preview.byCompany.get(companyId) ?? new Decimal(0)).sub(
-                                    preview.allocations
-                                      .filter((a) => a.companyId === companyId)
-                                      .reduce((s, a) => s.add(a.amount), new Decimal(0)),
-                                  ),
-                                ).toFixed(2),
-                              )
-                            : ""}
-                        </td>
-                      </tr>
-                    ))}
-                    {context.bills.flatMap((b) =>
-                      b.slices.map((s, i) => (
-                        <tr key={`${b.billId}-${s.companyId}`} className="border-t">
-                          <td className="px-3 py-1.5">
-                            {i === 0 ? `Bill #${b.number} · ${b.billDate}` : ""}
-                          </td>
-                          <td className="px-3 py-1.5">{s.companyName}</td>
-                          <td className="px-3 py-1.5 text-right tabular-nums">
-                            {formatMoney(s.outstanding)}
-                          </td>
-                          <td className="px-3 py-1.5 text-right tabular-nums">
-                            {applied(b.billId, s.companyId)
-                              ? formatMoney(applied(b.billId, s.companyId)!.toFixed(2))
-                              : ""}
-                          </td>
-                        </tr>
-                      )),
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <div className="grid gap-3 sm:grid-cols-3">
-                {context.oldBalance !== "0.00" ? (
-                  <div className="space-y-1">
-                    <label htmlFor="company-old" className="text-sm font-medium">
-                      Old balance{" "}
-                      <span className="text-muted-foreground font-normal">
-                        owes {formatMoney(context.oldBalance)}
-                      </span>
-                    </label>
-                    <Input
-                      id="company-old"
-                      name={`company:${OLD_BALANCE}`}
-                      inputMode="decimal"
-                      autoComplete="off"
-                      value={split[OLD_BALANCE] ?? ""}
-                      onChange={(e) => setSplit((s) => ({ ...s, [OLD_BALANCE]: e.target.value }))}
-                    />
-                  </div>
-                ) : null}
-                {context.companies.map((c) => (
-                  <div key={c.id} className="space-y-1">
-                    <label htmlFor={`company-${c.id}`} className="text-sm font-medium">
-                      {c.name}{" "}
-                      <span className="text-muted-foreground font-normal">
-                        owes {formatMoney(c.owed)}
-                      </span>
-                    </label>
-                    <Input
-                      id={`company-${c.id}`}
-                      name={`company:${c.id}`}
-                      inputMode="decimal"
-                      autoComplete="off"
-                      value={split[c.id] ?? ""}
-                      onChange={(e) => setSplit((s) => ({ ...s, [c.id]: e.target.value }))}
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
+                  ) : null}
+                  {context.unbilled !== "0.00" ? (
+                    <tr className="border-t">
+                      <td className="px-3 py-1.5">Old / opening balance</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">
+                        {formatMoney(context.unbilled)}
+                      </td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">
+                        {preview && preview.unbilled.gt(0)
+                          ? formatMoney(preview.unbilled.toFixed(2))
+                          : ""}
+                      </td>
+                    </tr>
+                  ) : null}
+                  {context.bills.map((b) => (
+                    <tr key={b.billId} className="border-t">
+                      <td className="px-3 py-1.5">
+                        Bill #{b.number} · {b.billDate}
+                      </td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">
+                        {formatMoney(b.outstanding)}
+                      </td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">
+                        {applied(b.billId) ? formatMoney(applied(b.billId)!.toFixed(2)) : ""}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
             <p className="text-sm" aria-live="polite">
-              {mode === "auto" && preview ? (
+              {preview ? (
                 <>
                   Applied {formatMoney(new Decimal(value!).sub(preview.advance).toFixed(2))}
                   {preview.advance.gt(0) ? (
                     <>
                       {" "}
-                      · advance <strong>{formatMoney(preview.advance.toFixed(2))}</strong>
-                      {context.advanceTo.length === 0 ? (
-                        <span className="text-destructive">
-                          {" "}
-                          · choose &ldquo;Split by company&rdquo; for an advance
-                        </span>
-                      ) : null}
+                      · advance <strong>{formatMoney(preview.advance.toFixed(2))}</strong> kept on
+                      the customer&apos;s account
                     </>
-                  ) : null}
-                  {preview.byCompany.size > 0 ? (
-                    <span className="text-muted-foreground">
-                      {" "}
-                      · by company:{" "}
-                      {[...preview.byCompany]
-                        .map(([k, v]) => `${companyName.get(k)} ${formatMoney(v.toFixed(2))}`)
-                        .join(", ")}
-                    </span>
-                  ) : null}
-                </>
-              ) : null}
-              {mode === "company" ? (
-                <>
-                  Split total {formatMoney(splitTotal.toFixed(2))}
-                  {value && !splitTotal.eq(value) ? (
-                    <strong className="text-destructive">
-                      {" "}
-                      · must equal the payment ({formatMoney(value.toFixed(2))})
-                    </strong>
                   ) : null}
                 </>
               ) : null}
             </p>
-          </fieldset>
+          </section>
 
           <FormMessage state={state} />
           <div className="flex flex-wrap gap-2">

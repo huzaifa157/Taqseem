@@ -15,7 +15,6 @@ import { formatMoney } from "@/lib/format";
 import { saveRecordAction } from "@/server/master-actions";
 import { clearCustomerFlagAction } from "@/server/payment-actions";
 import { areaOptions } from "@/server/services/master/areas";
-import { companyOptions } from "@/server/services/master/companies";
 import { getCustomer } from "@/server/services/master/customers";
 import { listCustomerDiscounts } from "@/server/services/sales/customer-discounts";
 
@@ -45,10 +44,9 @@ async function Notices({
 async function Editor({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const ctx = await requireTenantContext("masterData.manage");
-  const [customer, areas, companies, discounts] = await Promise.all([
+  const [customer, areas, discounts] = await Promise.all([
     orNotFound(getCustomer(ctx, id)),
     areaOptions(ctx),
-    companyOptions(ctx),
     listCustomerDiscounts(ctx, id),
   ]);
   // Keep the current area selectable even if it was deactivated.
@@ -101,7 +99,6 @@ async function Editor({ params }: { params: Promise<{ id: string }> }) {
         fields={customerFields(
           { ...customer, creditLimit: customer.creditLimit?.toFixed(2) ?? null },
           areaList,
-          companies,
         )}
         isNew={false}
         cancelHref="/customers"

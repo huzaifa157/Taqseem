@@ -35,6 +35,15 @@ async function Payment({ params, searchParams }: PageProps<"/payments/[id]">) {
   const ctx = await requireTenantContext("payments.manage");
   const p = await orNotFound(getCustomerPayment(ctx, id));
   const allocated = p.allocations.reduce((s, a) => s.add(a.amount), p.amount.sub(p.amount));
+  // One row per bill (payments before one-account customers were split per company).
+  const byBill = [...new Map(p.allocations.map((a) => [a.bill.id, a.bill])).values()].map(
+    (bill) => ({
+      bill,
+      amount: p.allocations
+        .filter((a) => a.bill.id === bill.id)
+        .reduce((s, a) => s.add(a.amount), p.amount.sub(p.amount)),
+    }),
+  );
   const posted = p.status === "POSTED";
   const chequePending = posted && p.cheque?.status === "PENDING";
 
@@ -84,20 +93,6 @@ async function Payment({ params, searchParams }: PageProps<"/payments/[id]">) {
         </Link>
       </div>
 
-      <section aria-labelledby="split-heading" className="max-w-md">
-        <h2 id="split-heading" className="mb-2 font-medium">
-          Credited per company
-        </h2>
-        <ul className="space-y-1 text-sm">
-          {p.shares.map((s) => (
-            <li key={s.companyId} className="flex justify-between gap-4">
-              <span>{s.companyName}</span>
-              <span className="tabular-nums">{formatMoney(s.amount)}</span>
-            </li>
-          ))}
-        </ul>
-      </section>
-
       <section aria-labelledby="bills-heading">
         <h2 id="bills-heading" className="mb-2 font-medium">
           Applied to bills
@@ -107,16 +102,15 @@ async function Payment({ params, searchParams }: PageProps<"/payments/[id]">) {
             <tr>
               <Th>Bill</Th>
               <Th>Date</Th>
-              <Th>Company</Th>
               <Th className="text-right">Applied</Th>
             </tr>
           </thead>
           <tbody>
             {p.allocations.length === 0 ? (
-              <EmptyRow colSpan={4}>Not applied to a bill (opening balance or advance).</EmptyRow>
+              <EmptyRow colSpan={3}>Not applied to a bill (old balance or advance).</EmptyRow>
             ) : null}
-            {p.allocations.map((a) => (
-              <tr key={a.id}>
+            {byBill.map((a) => (
+              <tr key={a.bill.id}>
                 <Td>
                   <Link
                     href={`/orders/${a.bill.salesOrderId}/bill`}
@@ -126,7 +120,6 @@ async function Payment({ params, searchParams }: PageProps<"/payments/[id]">) {
                   </Link>
                 </Td>
                 <Td>{formatDate(a.bill.billDate)}</Td>
-                <Td>{a.company.name}</Td>
                 <Td className="text-right tabular-nums">{formatMoney(a.amount)}</Td>
               </tr>
             ))}
@@ -134,7 +127,7 @@ async function Payment({ params, searchParams }: PageProps<"/payments/[id]">) {
         </DataTable>
         {p.amount.gt(allocated) ? (
           <p className="mt-2 text-sm">
-            Opening balance or advance (not on a bill): {formatMoney(p.amount.sub(allocated))}
+            Old balance or advance (not on a bill): {formatMoney(p.amount.sub(allocated))}
           </p>
         ) : null}
       </section>

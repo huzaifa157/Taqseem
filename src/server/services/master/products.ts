@@ -104,6 +104,65 @@ async function assertCompany(tx: TenantTx, companyId: string) {
   if (!company || !company.isActive) throw new ServiceError("Choose an active company.");
 }
 
+/**
+ * Moves a product to another company (it was set up under the wrong one). Stock belongs to the
+ * product and its warehouse, and customers have one account, so this is safe as long as the stock
+ * does not have to change warehouse: the new company must use the same warehouse, unless the
+ * product has no stock and no open orders. Booked and planned orders' lines move with it. What
+ * is already posted (purchases and company bills, delivered sales,
+ * claims) stays as it was recorded; bills are never rewritten (company reports read each product's
+ * current company). Refused while it is on an open purchase order.
+ */
+async function moveToCompany(
+  tx: TenantTx,
+  ctx: ServiceCtx,
+  product: { id: string; companyId: string },
+  toCompanyId: string,
+) {
+  const [from, to] = await Promise.all([
+    tx.company.findUniqueOrThrow({
+      where: { id: product.companyId },
+      include: { warehouse: { select: { name: true } } },
+    }),
+    tx.company.findUnique({ where: { id: toCompanyId } }),
+  ]);
+  if (!to || !to.isActive) throw new ServiceError("Choose an active company.");
+  const openPurchase = await tx.purchaseOrderLine.findFirst({
+    where: {
+      productId: product.id,
+      purchaseOrder: { status: { in: ["OPEN", "PARTIALLY_RECEIVED"] } },
+    },
+    select: { purchaseOrder: { select: { number: true } } },
+  });
+  if (openPurchase)
+    throw new ServiceError(
+      `This product is on open purchase order #${openPurchase.purchaseOrder.number} from ${from.name}. Close that order (or take the product off it) first, then change the company.`,
+    );
+  const openOrders = await tx.salesOrder.findMany({
+    where: { status: { in: ["BOOKED", "PLANNED"] }, lines: { some: { productId: product.id } } },
+    select: { number: true },
+  });
+  if (from.warehouseId !== to.warehouseId) {
+    const stock = await tx.stockMovement.groupBy({
+      by: ["bucket"],
+      where: { productId: product.id },
+      _sum: { quantity: true },
+    });
+    const hasStock = stock.some((g) => (g._sum.quantity ?? 0) !== 0);
+    if (hasStock || openOrders.length > 0)
+      throw new ServiceError(
+        `${to.name} is in another warehouse, and this product still has stock or open orders in ${from.warehouse.name}. Choose a company of ${from.warehouse.name}, or clear the stock and orders first.`,
+      );
+  }
+  // Open orders' lines follow the product. Bills are not touched: company reports read each
+  // product's current company, and the printed bill shows no company.
+  await tx.salesOrderLine.updateMany({
+    where: { productId: product.id, salesOrder: { status: { in: ["BOOKED", "PLANNED"] } } },
+    data: { companyId: to.id },
+  });
+  return { from: from.name, to: to.name, openOrders: openOrders.map((o) => o.number) };
+}
+
 async function writeSlabs(tx: TenantTx, ctx: ServiceCtx, productId: string, slabs: SlabView[]) {
   await tx.productDiscountTier.deleteMany({ where: { productId } });
   if (slabs.length > 0) {
@@ -197,16 +256,10 @@ export async function updateProductTx(
   });
   if (!before) throw new ServiceError("This product was not found.");
 
-  if (before.companyId !== data.companyId) {
-    const used =
-      (await tx.stockMovement.count({ where: { productId: id } })) +
-      (await tx.salesOrderLine.count({ where: { productId: id } }));
-    if (used > 0)
-      throw new ServiceError(
-        "This product already has stock or orders, so its company cannot change.",
-      );
-    await assertCompany(tx, data.companyId);
-  }
+  const moved =
+    before.companyId !== data.companyId
+      ? await moveToCompany(tx, ctx, before, data.companyId)
+      : null;
 
   const beforeSlabs = before.discountTiers.map((t) => ({
     minQuantity: t.minQuantity,
@@ -226,6 +279,11 @@ export async function updateProductTx(
     await appendPriceHistory(tx, ctx, id, parsed, slabs);
   }
   const diff = changedFields({ ...beforeRow, slabs: beforeSlabs }, { ...after, slabs });
+  if (moved) {
+    diff.oldValue.company = moved.from;
+    diff.newValue.company = moved.to;
+    if (moved.openOrders.length > 0) diff.newValue.movedOpenOrders = moved.openOrders;
+  }
   if (diff.changed) {
     await writeAudit(tx, ctx.user, {
       action: "UPDATE",

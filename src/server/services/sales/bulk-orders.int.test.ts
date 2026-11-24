@@ -74,7 +74,7 @@ async function setup() {
     type: "RETAILER",
     areaId: area.id,
     creditLimit: "10000",
-    openingBalances: { [crunchy.id]: "3000", [golden.id]: "1000" },
+    openingBalance: "4000",
   });
   const bilal = await createCustomer(ctx, {
     name: "Bilal Store",

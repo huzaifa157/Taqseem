@@ -1,6 +1,7 @@
 import "server-only";
 
 import { Prisma } from "@/generated/prisma/client";
+import { splitSpecialDiscount } from "@/lib/sales";
 
 import { assertCan, can } from "../auth/permissions";
 import type { ServiceCtx } from "./master/common";
@@ -50,16 +51,17 @@ export async function getDashboardCharts(ctx: ServiceCtx, date: Date) {
       },
       _sum: { netAmount: true },
     }),
-    // Sales per company from the customer ledger: bills less day-end corrections.
-    ctx.db.ledgerEntry.groupBy({
-      by: ["companyId"],
-      where: {
-        partyType: "CUSTOMER",
-        type: { in: ["SALES_BILL", "BILL_REVISION"] },
-        companyId: { not: null },
-        entryDate: { gte: salesFrom, lte: date },
+    // Sales per company: each posted bill's current lines, by the company each product belongs
+    // to now (so a product moved to the right company counts there, bills untouched).
+    ctx.db.bill.findMany({
+      where: { ...posted, billDate: { gte: salesFrom, lte: date } },
+      select: {
+        revisions: {
+          orderBy: { revision: "desc" },
+          take: 1,
+          select: { lines: true, companyTotals: true },
+        },
       },
-      _sum: { debit: true, credit: true },
     }),
     ctx.db.company.findMany({ select: { id: true, name: true } }),
     showMoney
@@ -88,10 +90,11 @@ export async function getDashboardCharts(ctx: ServiceCtx, date: Date) {
   });
 
   const companyName = new Map(companies.map((c) => [c.id, c.name]));
-  const salesByCompany = byCompany
-    .map((g) => ({
-      name: companyName.get(g.companyId!) ?? "",
-      amount: num(D(g._sum.debit).sub(D(g._sum.credit))),
+  const perCompany = await salesPerCompany(ctx, byCompany);
+  const salesByCompany = [...perCompany]
+    .map(([companyId, amount]) => ({
+      name: companyName.get(companyId) ?? "",
+      amount: num(amount),
     }))
     .filter((c) => c.amount !== 0)
     .sort((a, b) => b.amount - a.amount);
@@ -137,3 +140,41 @@ export async function getDashboardCharts(ctx: ServiceCtx, date: Date) {
 }
 
 export type DashboardCharts = Awaited<ReturnType<typeof getDashboardCharts>>;
+
+/**
+ * Sales per company from bills' current revisions: each line goes to the company its product
+ * belongs to now, less that company's share of the bill's special discount.
+ */
+export async function salesPerCompany(
+  ctx: ServiceCtx,
+  bills: { revisions: { lines: unknown; companyTotals: unknown }[] }[],
+) {
+  type Line = { productId: string; netAmount: string };
+  type Total = { specialDiscount?: string };
+  const revisions = bills.flatMap((b) => b.revisions.slice(0, 1));
+  const productIds = [
+    ...new Set(revisions.flatMap((r) => (r.lines as Line[]).map((l) => l.productId))),
+  ];
+  const products = await ctx.db.product.findMany({
+    where: { id: { in: productIds } },
+    select: { id: true, companyId: true },
+  });
+  const companyOf = new Map(products.map((p) => [p.id, p.companyId]));
+  const perCompany = new Map<string, Prisma.Decimal>();
+  for (const r of revisions) {
+    const bill = new Map<string, Prisma.Decimal>();
+    for (const l of r.lines as Line[]) {
+      const companyId = companyOf.get(l.productId);
+      if (companyId) bill.set(companyId, (bill.get(companyId) ?? D(0)).add(l.netAmount));
+    }
+    const special = (r.companyTotals as Total[]).reduce(
+      (s, t) => s.add(t.specialDiscount ?? 0),
+      D(0),
+    );
+    for (const [companyId, share] of splitSpecialDiscount(bill, special.toString()))
+      bill.set(companyId, bill.get(companyId)!.sub(share.toString()));
+    for (const [companyId, amount] of bill)
+      perCompany.set(companyId, (perCompany.get(companyId) ?? D(0)).add(amount));
+  }
+  return perCompany;
+}

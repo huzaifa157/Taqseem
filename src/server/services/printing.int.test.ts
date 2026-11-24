@@ -80,7 +80,7 @@ async function setup() {
   const customer = await createCustomer(ctx, {
     name: "Ali Khan",
     type: "RETAILER",
-    openingBalances: { [crunchy.id]: "3000", [golden.id]: "1000" },
+    openingBalance: "4000",
   });
   return { tenant, ctx, as, wh, crunchy, golden, chips, nimko, customer };
 }
@@ -176,24 +176,40 @@ describe("business and print settings", () => {
 });
 
 describe("customer statement", () => {
-  it("lists entries with a running balance and the company of each", async () => {
+  it("lists entries with a running balance on one account", async () => {
     const s = await getCustomerStatement(t.ctx, t.customer.id, {});
     expect(s.opening.toFixed(2)).toBe("0.00");
-    expect(s.rows.map((r) => r.companyName).sort()).toEqual(["Crunchy", "Golden"]);
+    expect(s.rows).toHaveLength(1);
     expect(s.rows.at(-1)!.balance.toFixed(2)).toBe("4000.00");
     expect(s.closing.toFixed(2)).toBe("4000.00");
-    expect(s.byCompany.map((c) => [c.companyName, c.balance.toFixed(2)])).toEqual([
-      ["Crunchy", "3000.00"],
-      ["Golden", "1000.00"],
-    ]);
   });
 
-  it("filters to one company and carries earlier entries into the opening balance", async () => {
-    const one = await getCustomerStatement(t.ctx, t.customer.id, { companyId: t.crunchy.id });
-    expect(one.company?.name).toBe("Crunchy");
-    expect(one.rows).toHaveLength(1);
-    expect(one.closing.toFixed(2)).toBe("3000.00");
+  it("shows entries posted per company before one-account customers as one row", async () => {
+    // As older versions posted it: one bill split over two companies.
+    const entry = (companyId: string, debit: number) =>
+      t.ctx.db.ledgerEntry.create({
+        data: {
+          tenantId: t.ctx.user.tenantId,
+          partyType: "CUSTOMER",
+          customerId: t.customer.id,
+          companyId,
+          type: "SALES_BILL",
+          entryDate: new Date("2026-10-20T00:00:00Z"),
+          debit,
+          description: "Bill #9 (order #9)",
+          referenceType: "Bill",
+          referenceId: "old-bill-9",
+        },
+      });
+    await entry(t.crunchy.id, 600);
+    await entry(t.golden.id, 400);
+    const s = await getCustomerStatement(t.ctx, t.customer.id, {});
+    const bill = s.rows.filter((r) => r.description === "Bill #9 (order #9)");
+    expect(bill.map((r) => r.debit.toFixed(2))).toEqual(["1000.00"]);
+    expect(s.closing.toFixed(2)).toBe("5000.00");
+  });
 
+  it("carries earlier entries into the opening balance", async () => {
     const later = await getCustomerStatement(t.ctx, t.customer.id, {
       from: new Date("2099-01-01T00:00:00Z"),
     });
@@ -229,7 +245,7 @@ describe("printing bills for selected orders", () => {
     const other = await setup();
     const { views, skipped } = await getBillViews(t.ctx, [b.id, a.id, b.id, randomUUID()]);
     expect(views.map((v) => v.order.number)).toEqual([b.number, a.number]);
-    expect(views[0]!.sections).toHaveLength(2);
+    expect(views[0]!.lines).toHaveLength(2);
     expect(skipped).toBe(1);
     expect((await getBillViews(other.ctx, [a.id])).views).toHaveLength(0);
   });

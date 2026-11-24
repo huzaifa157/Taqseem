@@ -67,17 +67,21 @@ describe("productSchema", () => {
 });
 
 describe("customerSchema", () => {
-  it("allows a blank credit limit (no limit) and signed opening balances", () => {
+  it("allows a blank credit limit (no limit) and a signed opening balance", () => {
     const c = customerSchema.parse({
       name: "Ali",
       type: "RETAILER",
       creditLimit: "",
       areaId: "",
       routeSequence: "",
-      openingBalances: { c1: "5,000", c2: "-250.5", c3: "" },
+      openingBalance: "-5,250.5",
     });
     expect(c).toMatchObject({ creditLimit: null, areaId: null, routeSequence: null, phone: null });
-    expect(c.openingBalances).toEqual({ c1: "5000", c2: "-250.5", c3: "0" });
+    expect(c.openingBalance).toBe("-5250.5");
+    // Blank: leave the opening balance as it is.
+    expect(
+      customerSchema.parse({ name: "B", type: "DEALER", openingBalance: "" }).openingBalance,
+    ).toBe(undefined);
   });
 
   it("validates phone numbers", () => {

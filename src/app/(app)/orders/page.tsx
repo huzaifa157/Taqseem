@@ -115,9 +115,6 @@ export default async function OrdersPage({ searchParams }: PageProps<"/orders">)
           <Button type="submit" variant="outline" size="sm">
             Print selected bills
           </Button>
-          <Button type="submit" name="view" value="company" variant="outline" size="sm">
-            Print selected, split by company
-          </Button>
         </div>
         <DataTable>
           <thead>

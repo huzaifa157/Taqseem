@@ -280,8 +280,8 @@ export const customerSchema = z.object({
   routeSequence: optionalIntSchema("visiting order", 0, 9999),
   /** Blank = no limit. */
   creditLimit: optionalMoneySchema("credit limit"),
-  /** companyId → what the customer owes for that company at the start (negative = advance). */
-  openingBalances: z.record(idSchema, signedMoneySchema("opening balance")).default({}),
+  /** What the customer owed when the app started (negative = advance); blank = leave it. */
+  openingBalance: z.preprocess(blankToUndefined, signedMoneySchema("opening balance").optional()),
 });
 
 export const bikeSchema = z.object({

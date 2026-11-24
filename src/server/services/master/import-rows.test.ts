@@ -142,8 +142,8 @@ describe("validateAreaRows", () => {
 describe("sample sheet", () => {
   it("has example rows for every import that match its columns and are never imported", async () => {
     for (const kind of IMPORT_KINDS) {
-      const headers = templateHeaders(kind, ["Crunchy Bites Foods"]);
-      const examples = templateExamples(kind, { companies: ["Crunchy Bites Foods"] });
+      const headers = templateHeaders(kind);
+      const examples = templateExamples(kind, {});
       expect(examples.length).toBeGreaterThan(0);
       for (const row of examples) {
         expect(row).toHaveLength(headers.length);
@@ -234,7 +234,12 @@ describe("validateCustomerRows", () => {
     existingKeys: new Set([customerKey("Existing Shop", "0300-1111111")]),
     existingNames: new Set(["existing shop"]),
   };
-  const headers = [...templateHeaders("customers", ["Crunchy Bites Foods", "Golden Crisp"])];
+  // Two "Opening: company" columns, as on sheets made before customers had one account.
+  const headers = [
+    ...templateHeaders("customers"),
+    "Opening: Crunchy Bites Foods",
+    "Opening: Golden Crisp",
+  ];
   /** A row with only name, phone, area and warehouse filled in. */
   const row = (name: string, phone: string, area = "", warehouse = "") => {
     const cells = headers.map(() => "");
@@ -245,7 +250,7 @@ describe("validateCustomerRows", () => {
     return cells;
   };
 
-  it("reads types, areas and per-company opening balances", () => {
+  it("reads types, areas and one opening balance (older per-company columns added up)", () => {
     const [read] = validateCustomerRows(
       {
         headers,
@@ -261,6 +266,7 @@ describe("validateCustomerRows", () => {
             "",
             "3",
             "",
+            "1,000",
             "5,000",
             "-250",
           ],
@@ -275,7 +281,7 @@ describe("validateCustomerRows", () => {
       areaId: "a1",
       routeSequence: 3,
       creditLimit: null,
-      openingBalances: { c1: "5000", c2: "-250" },
+      openingBalance: "5750",
     });
   });
 
@@ -340,18 +346,18 @@ describe("validateCustomerRows", () => {
     expect(same).toMatchObject({ newArea: only!.newArea, note: "New area: Model Town (Main)" });
   });
 
-  it("skips customers already there, and reports unknown companies, types and duplicates", () => {
+  it("skips customers already there, and reports bad types and duplicates", () => {
     const rows = validateCustomerRows(
       {
-        headers: [...headers, "Opening: Ghost Foods"],
+        headers,
         rows: [
-          ["Bad", "", "supermarket", "", "", "", "", "", "", "", "", "", "100"],
-          [...row("existing shop", "03001111111", "Nowhere"), ""],
-          [...row("Twin", "0311-2222222"), ""],
-          [...row("Twin", "0311 2222222"), ""],
+          ["Bad", "", "supermarket", "", "", "", "", "", "", "", "", "", "abc"],
+          row("existing shop", "03001111111", "Nowhere"),
+          row("Twin", "0311-2222222"),
+          row("Twin", "0311 2222222"),
           // Same name as a customer here or earlier in the file, another phone: names are unique.
-          [...row("EXISTING  Shop", "0300-9999999"), ""],
-          [...row("twin", "0311-3333333"), ""],
+          row("EXISTING  Shop", "0300-9999999"),
+          row("twin", "0311-3333333"),
         ],
       },
       lookups,
@@ -359,7 +365,7 @@ describe("validateCustomerRows", () => {
     expect(rows.map((r) => r.status)).toEqual(["error", "skip", "new", "error", "error", "error"]);
     expect(rows[0]!.errors).toEqual([
       "Type: use Retailer, Wholesaler, Dealer or Bike supplier",
-      'Opening: Ghost Foods: "Ghost Foods" is not an active company',
+      "Opening balance: Enter the opening balance in rupees, with at most 2 decimals",
     ]);
     expect(rows[1]).toMatchObject({ errors: [], note: "Already there" });
     expect(rows[3]!.errors).toEqual(["This customer name appears more than once in the file"]);

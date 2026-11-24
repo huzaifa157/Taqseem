@@ -17,7 +17,7 @@ import { companyOptions } from "@/server/services/master/companies";
 import { parseDateRange } from "@/server/services/purchasing/filters";
 import { listGoodsReceipts } from "@/server/services/purchasing/goods-receipts";
 
-export const metadata: Metadata = { title: "Goods receipts" };
+export const metadata: Metadata = { title: "Purchases" };
 
 export default async function GoodsReceiptsPage({
   searchParams,
@@ -39,9 +39,9 @@ export default async function GoodsReceiptsPage({
   return (
     <>
       <PageHeader
-        title="Goods receipts"
-        description="Stock received from companies. Each receipt adds a batch and creates a company bill."
-        actions={<LinkButton href="/purchases/receipts/new">Receive goods</LinkButton>}
+        title="Purchases"
+        description="Goods bought from companies. Each purchase adds the stock and a company bill; what was paid is under Payments."
+        actions={<LinkButton href="/purchases/new">New purchase</LinkButton>}
       />
       <ListToolbar
         basePath="/purchases/receipts"

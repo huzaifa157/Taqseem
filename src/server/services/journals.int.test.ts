@@ -36,7 +36,7 @@ import { createCompanyPayment } from "./purchasing/payments";
 import { getBillView } from "./sales/bills";
 import { cancelSalesOrder, createSalesOrder } from "./sales/orders";
 import { customerPending, stockPositions } from "./sales/positions";
-import { getCompanyReceivables, getCustomerStatement } from "./statements";
+import { getCustomerStatement } from "./statements";
 
 // Phase 1 review: one realistic week through every posting path (receipts and a cancelled
 // receipt, orders and a cancelled order, dispatch, day-end with returns and damage, office and
@@ -120,7 +120,7 @@ async function week() {
     name: "Ali",
     type: "RETAILER",
     areaId: area.id,
-    openingBalances: { [crunchy.id]: "1000" },
+    openingBalance: "1000",
   });
   const bilal = await createCustomer(ctx, { name: "Bilal", type: "RETAILER", areaId: area.id });
 
@@ -261,9 +261,9 @@ describe("stock journal", () => {
 });
 
 describe("customer ledger", () => {
-  it("every customer entry carries a company, and no entry is zero", async () => {
+  it("customer entries are on one account (no company), and no entry is zero", async () => {
     const entries = await ctx.db.ledgerEntry.findMany({ where: { partyType: "CUSTOMER" } });
-    expect(entries.every((e) => e.companyId)).toBe(true);
+    expect(entries.every((e) => e.companyId === null)).toBe(true);
     expect(entries.every((e) => e.debit.isZero() !== e.credit.isZero())).toBe(true);
   });
 
@@ -283,55 +283,34 @@ describe("customer ledger", () => {
       });
       const posted = entries.reduce((s, e) => s.add(e.debit).sub(e.credit), D(0));
       expect(money(posted)).toBe(money(view.bill.netAmount));
-      const bySection = view.sections.reduce((s, x) => s.add(x.thisBill), D(0));
-      expect(money(bySection)).toBe(money(view.bill.netAmount));
     }
     expect(money((await getBillView(ctx, w.a.id)).bill.netAmount)).toBe("2214.00");
   });
 
-  it("allocations never exceed a bill slice, and unpaid slices match what is owed", async () => {
+  it("allocations never exceed a bill, and unpaid bills match what is owed", async () => {
     const allocations = await ctx.db.paymentAllocation.findMany({
       where: { customerPayment: { status: "POSTED" } },
     });
-    const bills = await ctx.db.bill.findMany({
-      include: { revisions: { orderBy: { revision: "desc" }, take: 1 } },
-    });
+    const bills = await ctx.db.bill.findMany();
     for (const bill of bills) {
-      for (const slice of bill.revisions[0]!.companyTotals as {
-        companyId: string;
-        netAmount: string;
-      }[]) {
-        const paid = allocations
-          .filter((x) => x.billId === bill.id && x.companyId === slice.companyId)
-          .reduce((s, x) => s.add(x.amount), D(0));
-        expect(paid.lte(slice.netAmount)).toBe(true);
-      }
+      const paid = allocations
+        .filter((x) => x.billId === bill.id)
+        .reduce((s, x) => s.add(x.amount), D(0));
+      expect(paid.lte(bill.netAmount)).toBe(true);
     }
     // Ali's debt bill by bill adds up to his ledger balance.
     const { debt, pending } = await customerDebt(ctx.db, w.ali.id);
-    const owed = [...debt.unbilled.values()]
-      .reduce((s, v) => s.add(v.toString()), D(0))
-      .add(
-        debt.bills.flatMap((b) => b.slices).reduce((s, x) => s.add(x.outstanding.toString()), D(0)),
-      );
+    const owed = debt.bills.reduce((s, b) => s.add(b.outstanding.toString()), D(debt.unbilled));
     expect(money(owed)).toBe(money(pending.total));
   });
 
-  it("statements and company receivables add up to the same balances", async () => {
+  it("statements add up to the same balances as the ledger", async () => {
+    let total = D(0);
     for (const customer of [w.ali, w.bilal]) {
       const all = await getCustomerStatement(ctx, customer.id, {});
       expect(money(all.closing)).toBe(money((await customerPending(ctx.db, customer.id)).total));
-      const perCompany = await Promise.all(
-        [w.crunchy, w.golden].map((c) =>
-          getCustomerStatement(ctx, customer.id, { companyId: c.id }),
-        ),
-      );
-      expect(money(perCompany.reduce((s, x) => s.add(x.closing), D(0)))).toBe(money(all.closing));
+      total = total.add(all.closing);
     }
-    const receivables = await Promise.all(
-      [w.crunchy, w.golden].map((c) => getCompanyReceivables(ctx, c.id, {})),
-    );
-    const total = receivables.reduce((s, r) => s.add(r.totals.closing), D(0));
     expect(money(total)).toBe("1894.00");
   });
 });

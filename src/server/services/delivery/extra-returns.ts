@@ -180,7 +180,6 @@ export async function postExtraReturns(
           tenantId: ctx.user.tenantId,
           partyType: "CUSTOMER",
           customerId: order.customerId,
-          companyId,
           type: "CUSTOMER_RETURN",
           entryDate: date,
           credit: amount,

@@ -15,6 +15,7 @@ import {
 } from "@/lib/analysis";
 import { businessToday } from "@/lib/dates";
 import { calculateLineAmounts } from "@/lib/pricing";
+import { splitSpecialDiscount } from "@/lib/sales";
 import { PACKETS_PER_DOZEN } from "@/lib/units";
 
 import { assertCan, can } from "../../auth/permissions";
@@ -151,11 +152,16 @@ export async function businessAnalysis(ctx: ServiceCtx, kind: PeriodKind, date: 
         ? "prev"
         : null;
     if (!which) continue;
+    // By the company each product belongs to now (a product moved to the right company counts
+    // there; bills are not rewritten).
+    const billByCompany = new Map<string, Prisma.Decimal>();
     for (const l of linesOf(b)) {
       const cost = showCost ? costOf(l.productId, l.quantity) : ZERO;
+      const companyId = productById.get(l.productId)?.companyId ?? l.companyId;
+      billByCompany.set(companyId, (billByCompany.get(companyId) ?? ZERO).add(l.netAmount));
       for (const [map, key] of [
         [byProduct, l.productId],
-        [byCompany, l.companyId],
+        [byCompany, companyId],
       ] as const) {
         const row = map.get(key) ?? { cur: emptyAgg(), prev: emptyAgg() };
         const a = row[which];
@@ -166,13 +172,12 @@ export async function businessAnalysis(ctx: ServiceCtx, kind: PeriodKind, date: 
       }
     }
     // A special discount on the whole bill comes off each company's sales by its share.
-    const totals = (b.revisions[0]?.companyTotals ?? []) as {
-      companyId: string;
-      specialDiscount?: string;
-    }[];
-    for (const t of totals) {
-      const row = t.specialDiscount ? byCompany.get(t.companyId) : undefined;
-      if (row) row[which].amount = row[which].amount.sub(t.specialDiscount!);
+    const special = (
+      (b.revisions[0]?.companyTotals ?? []) as { specialDiscount?: string }[]
+    ).reduce((s, t) => s.add(t.specialDiscount ?? 0), ZERO);
+    for (const [companyId, share] of splitSpecialDiscount(billByCompany, special.toString())) {
+      const row = byCompany.get(companyId);
+      if (row) row[which].amount = row[which].amount.sub(share.toString());
     }
   }
   const sentBack = new Map<string, { sent: number; back: number }>();

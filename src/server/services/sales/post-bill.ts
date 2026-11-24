@@ -2,14 +2,12 @@ import "server-only";
 
 import { Prisma } from "@/generated/prisma/client";
 import { loadByProduct, takeFromBatches } from "@/lib/delivery";
-import { splitSpecialDiscount } from "@/lib/sales";
 import { formatDozens } from "@/lib/units";
 
 import type { TenantTx } from "../../db/tenant";
 import { ServiceError } from "../errors";
 import type { ServiceCtx } from "../master/common";
 import { batchBalances } from "../posting";
-import type { FrozenPrevious } from "./bills";
 import { customerPending } from "./positions";
 
 // Posting a sale: the stock leaves the warehouse and the bill goes to the customer ledger. Used by
@@ -87,8 +85,8 @@ export async function stockOut(
 }
 
 /**
- * Posts an order's bill to the customer ledger (one entry per company slice) dated `date`, and
- * freezes the customer's previous pending (overall and per company) for printing.
+ * Posts an order's bill to the customer ledger (one entry: customers have one account) dated
+ * `date`, and freezes the customer's previous balance for printing.
  */
 export async function postOrderBill(
   tx: TenantTx,
@@ -97,8 +95,8 @@ export async function postOrderBill(
     id: string;
     number: number;
     customerId: string;
-    lines: { companyId: string; netAmount: Prisma.Decimal }[];
-    /** Rupees off the whole bill, split over its companies by amount. */
+    lines: { netAmount: Prisma.Decimal }[];
+    /** Rupees off the whole bill. */
     specialDiscount: Prisma.Decimal;
     bill: { id: string; number: number } | null;
   },
@@ -106,39 +104,25 @@ export async function postOrderBill(
 ) {
   const bill = order.bill!;
   const pending = await customerPending(tx, order.customerId);
-  const frozen: FrozenPrevious = [...pending.byCompany]
-    .filter(([, v]) => !v.isZero())
-    .map(([companyId, amount]) => ({ companyId, amount: amount.toFixed(2) }));
   await tx.bill.update({
     where: { id: bill.id },
+    data: { postedAt: new Date(), billDate: date, previousBalance: pending.total },
+  });
+  const lines = order.lines.reduce((s, l) => s.add(l.netAmount), D(0));
+  const amount = Prisma.Decimal.max(lines.sub(Prisma.Decimal.min(order.specialDiscount, lines)), 0);
+  if (amount.isZero()) return;
+  await tx.ledgerEntry.create({
     data: {
-      postedAt: new Date(),
-      billDate: date,
-      previousBalance: pending.total,
-      previousByCompany: frozen,
+      tenantId: ctx.user.tenantId,
+      partyType: "CUSTOMER",
+      customerId: order.customerId,
+      type: "SALES_BILL",
+      entryDate: date,
+      debit: amount,
+      description: `Bill #${bill.number} (order #${order.number})`,
+      referenceType: "Bill",
+      referenceId: bill.id,
+      createdById: ctx.user.id,
     },
   });
-  const byCompany = new Map<string, Prisma.Decimal>();
-  for (const l of order.lines)
-    byCompany.set(l.companyId, (byCompany.get(l.companyId) ?? D(0)).add(l.netAmount));
-  for (const [companyId, share] of splitSpecialDiscount(byCompany, order.specialDiscount))
-    byCompany.set(companyId, byCompany.get(companyId)!.sub(share.toString()));
-  for (const [companyId, amount] of byCompany) {
-    if (amount.isZero()) continue;
-    await tx.ledgerEntry.create({
-      data: {
-        tenantId: ctx.user.tenantId,
-        partyType: "CUSTOMER",
-        customerId: order.customerId,
-        companyId,
-        type: "SALES_BILL",
-        entryDate: date,
-        debit: amount,
-        description: `Bill #${bill.number} (order #${order.number})`,
-        referenceType: "Bill",
-        referenceId: bill.id,
-        createdById: ctx.user.id,
-      },
-    });
-  }
 }

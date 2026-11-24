@@ -19,7 +19,7 @@ export default async function NewPurchaseOrderPage() {
   ]);
   return (
     <>
-      <BackLink href="/purchases">Purchase orders</BackLink>
+      <BackLink href="/purchases/orders">Purchase orders</BackLink>
       <PageHeader
         title="New purchase order"
         description="Type quantities in dozens for the products you ordered; leave the rest blank."

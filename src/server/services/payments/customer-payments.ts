@@ -10,14 +10,7 @@ import type {
 import { businessToday, formatDate } from "@/lib/dates";
 import { formatMoney } from "@/lib/format";
 import { icontains, matchEveryWord, searchNumber } from "@/lib/list-params";
-import {
-  allocateByCompany,
-  allocateOldestFirst,
-  type BillDebt,
-  checkCompanySplit,
-  effectiveDebt,
-  OLD_BALANCE,
-} from "@/lib/payments";
+import { allocateOldestFirst, type BillDebt, effectiveDebt } from "@/lib/payments";
 import { recordIdSchema } from "@/lib/validation/master";
 import { customerPaymentSchema } from "@/lib/validation/payments";
 import { reverseSchema } from "@/lib/validation/purchasing";
@@ -39,54 +32,37 @@ import { customerPending } from "../sales/positions";
 
 const D = (v: Prisma.Decimal | number | string) => new Prisma.Decimal(v);
 type Reader = TenantTx | ServiceCtx["db"];
-type SnapshotCompany = { companyId: string; netAmount: string };
 
-/** Everything the customer owes, bill by bill (posted bills, minus posted payments). */
+/**
+ * Everything the customer owes, bill by bill: posted bills less the payments allocated to them,
+ * and the debt no bill explains (old balance, opening balance). One account, no companies.
+ */
 export async function customerDebt(tx: Reader, customerId: string) {
   const [pending, bills] = await Promise.all([
     customerPending(tx, customerId),
     tx.bill.findMany({
       where: { customerId, status: "POSTED", postedAt: { not: null } },
       orderBy: [{ billDate: "asc" }, { number: "asc" }],
-      include: { revisions: { orderBy: { revision: "desc" }, take: 1 } },
+      select: { id: true, number: true, billDate: true, netAmount: true },
     }),
   ]);
   const paid = await tx.paymentAllocation.groupBy({
-    by: ["billId", "companyId"],
+    by: ["billId"],
     where: { billId: { in: bills.map((b) => b.id) }, customerPayment: { status: "POSTED" } },
     _sum: { amount: true },
   });
-  const paidKey = new Map(paid.map((p) => [`${p.billId}:${p.companyId}`, p._sum.amount ?? D(0)]));
-  const raw: (BillDebt & { billDate: Date })[] = bills.map((b) => ({
-    billId: b.id,
-    number: b.number,
-    billDate: b.billDate,
-    slices: (b.revisions[0]!.companyTotals as SnapshotCompany[])
-      .map((c) => ({
-        companyId: c.companyId,
-        outstanding: D(c.netAmount)
-          .sub(paidKey.get(`${b.id}:${c.companyId}`) ?? 0)
-          .toString(),
-      }))
-      .filter((s) => D(s.outstanding).gt(0)),
-  }));
-  // The old balance first: it is the oldest debt, and screens list it in this order.
-  const owed = new Map<string, string>(
-    pending.oldBalance.isZero() ? [] : [[OLD_BALANCE, pending.oldBalance.toString()]],
-  );
-  for (const [k, v] of pending.byCompany) owed.set(k, v.toString());
-  const debt = effectiveDebt(owed, raw);
-  const lastBill = bills.at(-1);
+  const paidOf = new Map(paid.map((p) => [p.billId, p._sum.amount ?? D(0)]));
+  const raw: BillDebt[] = bills
+    .map((b) => ({
+      billId: b.id,
+      number: b.number,
+      outstanding: b.netAmount.sub(paidOf.get(b.id) ?? 0).toString(),
+    }))
+    .filter((b) => D(b.outstanding).gt(0));
   return {
     pending,
-    debt,
-    billDates: new Map(raw.map((b) => [b.billId, b.billDate])),
-    /** Where an advance goes when nothing is owed: the companies of the latest bill. */
-    lastBillCompanies: lastBill
-      ? (lastBill.revisions[0]!.companyTotals as SnapshotCompany[]).map(
-          (c) => [c.companyId, c.netAmount] as [string, string],
-        )
-      : [],
+    debt: effectiveDebt(pending.total.toString(), raw),
+    billDates: new Map(bills.map((b) => [b.id, b.billDate])),
   };
 }
 
@@ -101,10 +77,6 @@ export type CustomerPaymentPost = {
   salesOrderId?: string;
   note?: string | null;
   requestId?: string;
-  /** Manual split by company; otherwise oldest debt first. */
-  perCompany?: Map<string, Prisma.Decimal>;
-  /** Where an advance goes (default: the companies of the customer's latest bill). */
-  fallbackCompanies?: [string, Prisma.Decimal][];
 };
 
 const methodLabel = (p: Pick<CustomerPaymentPost, "method" | "cheque" | "reference">) =>
@@ -117,27 +89,8 @@ const methodLabel = (p: Pick<CustomerPaymentPost, "method" | "cheque" | "referen
 /** Saves one payment, its allocations and its ledger credits, inside the caller's transaction. */
 export async function postCustomerPayment(tx: TenantTx, ctx: ServiceCtx, p: CustomerPaymentPost) {
   if (p.amount.lte(0)) throw new ServiceError("The amount must be more than zero.");
-  const { debt, lastBillCompanies } = await customerDebt(tx, p.customerId);
-  let split;
-  if (p.perCompany) {
-    const errors = checkCompanySplit(p.amount.toString(), p.perCompany);
-    if (errors.length > 0) throw new ServiceError(errors.join(" "));
-    const old = debt.unbilled.get(OLD_BALANCE) ?? D(0);
-    if (D((p.perCompany.get(OLD_BALANCE) ?? 0).toString()).gt(old.toString()))
-      throw new ServiceError(
-        `The old balance is only ${formatMoney(old.toString())}. Put the rest against a company.`,
-      );
-    split = allocateByCompany(p.perCompany, debt);
-  } else {
-    const advanceTo = (p.fallbackCompanies ?? lastBillCompanies).map(
-      ([k, v]) => [k, v.toString()] as [string, string],
-    );
-    split = allocateOldestFirst(p.amount.toString(), debt, advanceTo);
-    if (split.advance.gt(0) && advanceTo.length === 0)
-      throw new ServiceError(
-        'This customer owes nothing yet. Choose "Split by company" to say which company the advance is for.',
-      );
-  }
+  const { debt } = await customerDebt(tx, p.customerId);
+  const split = allocateOldestFirst(p.amount.toString(), debt);
 
   const cheque = p.cheque
     ? await tx.cheque.create({
@@ -168,42 +121,35 @@ export async function postCustomerPayment(tx: TenantTx, ctx: ServiceCtx, p: Cust
       createdById: ctx.user.id,
     },
   });
-  for (const [companyId, share] of split.byCompany) {
-    if (share.lte(0)) continue;
-    await tx.ledgerEntry.create({
-      data: {
-        tenantId: ctx.user.tenantId,
-        partyType: "CUSTOMER",
-        customerId: p.customerId,
-        companyId: companyId === OLD_BALANCE ? null : companyId,
-        type: "CUSTOMER_PAYMENT",
-        entryDate: p.paymentDate,
-        credit: D(share.toString()),
-        description: `${methodLabel(p)} received, payment #${payment.number}`,
-        referenceType: "CustomerPayment",
-        referenceId: payment.id,
-        createdById: ctx.user.id,
-      },
-    });
-  }
+  await tx.ledgerEntry.create({
+    data: {
+      tenantId: ctx.user.tenantId,
+      partyType: "CUSTOMER",
+      customerId: p.customerId,
+      type: "CUSTOMER_PAYMENT",
+      entryDate: p.paymentDate,
+      credit: p.amount,
+      description: `${methodLabel(p)} received, payment #${payment.number}`,
+      referenceType: "CustomerPayment",
+      referenceId: payment.id,
+      createdById: ctx.user.id,
+    },
+  });
   if (split.allocations.length > 0) {
     await tx.paymentAllocation.createMany({
       data: split.allocations.map((a) => ({
         tenantId: ctx.user.tenantId,
         customerPaymentId: payment.id,
         billId: a.billId,
-        companyId: a.companyId,
         amount: D(a.amount.toString()),
       })),
     });
   }
   return {
     payment,
-    shares: [...split.byCompany].map(([companyId, amount]) => ({
-      companyId,
-      amount: D(amount.toString()),
-    })),
     allocations: split.allocations,
+    toOldBalance: D(split.unbilled.toString()),
+    advance: D(split.advance.toString()),
   };
 }
 
@@ -223,7 +169,7 @@ export async function createCustomerPayment(ctx: ServiceCtx, input: unknown) {
       }
       const customer = await tx.customer.findUnique({ where: { id: data.customerId } });
       if (!customer) throw new ServiceError("Choose the customer.");
-      const { payment, shares, allocations } = await postCustomerPayment(tx, ctx, {
+      const { payment, ...split } = await postCustomerPayment(tx, ctx, {
         customerId: customer.id,
         paymentDate: data.paymentDate,
         method: data.method,
@@ -236,16 +182,12 @@ export async function createCustomerPayment(ctx: ServiceCtx, input: unknown) {
         collectedVia: "OFFICE",
         note: data.note,
         requestId: data.requestId,
-        perCompany:
-          data.allocationMode === "company"
-            ? new Map(data.companyAmounts.map((c) => [c.companyId, D(c.amount)]))
-            : undefined,
       });
       await writeAudit(tx, ctx.user, {
         action: "POST",
         entityType: "CustomerPayment",
         entityId: payment.id,
-        newValue: { ...payment, shares, allocations },
+        newValue: { ...payment, ...split },
         requestId: data.requestId,
       });
       return payment;
@@ -445,43 +387,32 @@ export async function getCustomerPayment(ctx: ServiceCtx, id: string) {
         allocations: {
           include: {
             bill: { select: { id: true, number: true, billDate: true, salesOrderId: true } },
-            company: { select: { name: true } },
           },
         },
       },
     }),
     "payment",
   );
-  const shares = await ctx.db.ledgerEntry.findMany({
-    where: { referenceType: "CustomerPayment", referenceId: id, type: "CUSTOMER_PAYMENT" },
-    include: { company: { select: { name: true } } },
-  });
+  const allocated = p.allocations.reduce((sum, a) => sum.add(a.amount), D(0));
   return {
     ...p,
     allocations: [...p.allocations].sort(
       (a, b) =>
         a.bill.billDate.getTime() - b.bill.billDate.getTime() || a.bill.number - b.bill.number,
     ),
-    shares: shares.map((s) => ({
-      companyId: s.companyId ?? OLD_BALANCE,
-      companyName: s.company?.name ?? "Old balance",
-      amount: s.credit,
-    })),
+    /** Not put against a bill: the old / opening balance, or an advance. */
+    notOnBills: p.amount.sub(allocated),
   };
 }
 
-/** The payment screen's view of a customer: what is owed per company and the open bills. */
+/** The payment screen's view of a customer: what they owe and their open bills, oldest first. */
 export async function paymentContext(ctx: ServiceCtx, customerId: string) {
   assertCan(ctx.user.role, "payments.manage");
   const customer = found(
     await ctx.db.customer.findUnique({ where: { id: customerId } }),
     "customer",
   );
-  const [{ pending, debt, billDates, lastBillCompanies }, companies] = await Promise.all([
-    customerDebt(ctx.db, customerId),
-    ctx.db.company.findMany({ select: { id: true, name: true }, orderBy: { name: "asc" } }),
-  ]);
-  const name = new Map(companies.map((c) => [c.id, c.name]));
+  const { pending, debt, billDates } = await customerDebt(ctx.db, customerId);
   return {
     customer: {
       id: customer.id,
@@ -491,26 +422,14 @@ export async function paymentContext(ctx: ServiceCtx, customerId: string) {
       flagReason: customer.flagReason,
     },
     pending: pending.total.toFixed(2),
-    oldBalance: pending.oldBalance.toFixed(2),
-    companies: companies.map((c) => ({
-      id: c.id,
-      name: c.name,
-      owed: (pending.byCompany.get(c.id) ?? D(0)).toFixed(2),
-    })),
-    unbilled: [...debt.unbilled].map(
-      ([companyId, amount]) => [companyId, amount.toFixed(2)] as [string, string],
-    ),
+    /** Owed with no bill: the old balance (paper bills) and an opening balance. Paid first. */
+    unbilled: debt.unbilled.toFixed(2),
     bills: debt.bills.map((b) => ({
       billId: b.billId,
       number: b.number,
       billDate: billDates.get(b.billId)!.toISOString().slice(0, 10),
-      slices: b.slices.map((s) => ({
-        companyId: s.companyId,
-        companyName: name.get(s.companyId) ?? "",
-        outstanding: D(s.outstanding.toString()).toFixed(2),
-      })),
+      outstanding: b.outstanding.toFixed(2),
     })),
-    advanceTo: lastBillCompanies,
   };
 }
 

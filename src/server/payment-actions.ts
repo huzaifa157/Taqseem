@@ -4,6 +4,8 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
 import type { ActionState } from "@/lib/action-state";
+import { businessToday, toDateInput } from "@/lib/dates";
+import { formatMoney } from "@/lib/format";
 
 import { runAction } from "./actions";
 import { requireTenantContext } from "./auth/session";
@@ -18,6 +20,7 @@ import {
   reverseCustomerPayment,
 } from "./services/payments/customer-payments";
 import { createOldBill, removeOldBill } from "./services/payments/old-bills";
+import { customerPending } from "./services/sales/positions";
 
 // Server actions for customer payments at the office. The services check permissions, allocate,
 // post to the ledger and audit.
@@ -45,10 +48,7 @@ export async function saveCustomerPaymentAction(
     const fields: Record<string, string> = {};
     for (const [key, value] of formData)
       if (typeof value === "string" && !key.startsWith("$ACTION")) fields[key] = value;
-    const companyAmounts = Object.entries(fields)
-      .filter(([key, value]) => key.startsWith("company:") && value.trim() !== "")
-      .map(([key, amount]) => ({ companyId: key.slice("company:".length), amount }));
-    savedId = (await createCustomerPayment(ctx, { ...fields, companyAmounts })).id;
+    savedId = (await createCustomerPayment(ctx, fields)).id;
   }, formData);
   if (result.status !== "success") return result;
   revalidatePath("/payments");
@@ -129,6 +129,41 @@ export async function saveOldBillAction(
   if (result.status !== "success") return result;
   revalidatePath("/customers");
   redirect(`/customers/${customerId}/old-bills?notice=old-bill-added`);
+}
+
+/**
+ * Adds an amount to a customer's balance (what they owe), from the Ledgers page or the order /
+ * counter-sale screen: an old-balance entry dated today with the note, shown on the statement as
+ * "Added to balance". Stays on the page; the message says what they owe now.
+ */
+export async function addToBalanceAction(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const result = await runAction<undefined>(async () => {
+    const ctx = await requireTenantContext("payments.manage");
+    const customerId = String(formData.get("customerId") ?? "");
+    if (!customerId) throw new ServiceError("Choose the customer.");
+    const bill = await createOldBill(ctx, {
+      requestId: formData.get("requestId"),
+      customerId,
+      billDate: toDateInput(businessToday()),
+      amount: formData.get("amount"),
+      note: formData.get("note"),
+    });
+    const [customer, pending] = await Promise.all([
+      ctx.db.customer.findUniqueOrThrow({ where: { id: customerId }, select: { name: true } }),
+      customerPending(ctx.db, customerId),
+    ]);
+    return {
+      message: `Rs ${formatMoney(bill.amount)} added to ${customer.name}'s balance. Now owes Rs ${formatMoney(pending.total)}.`,
+    };
+  }, formData);
+  if (result.status === "success") {
+    revalidatePath("/ledgers");
+    revalidatePath("/customers");
+  }
+  return result;
 }
 
 export async function removeOldBillAction(

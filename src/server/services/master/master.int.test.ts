@@ -324,29 +324,32 @@ describe("opening balances post differences to the ledger", () => {
     expect((await listCompanies(t.as("STAFF"), listAll)).rows[0]!.payable).toBeNull();
   });
 
-  it("customer: per company, and the list shows the total pending", async () => {
-    const other = await createCompany(t.ctx, {
-      warehouseId: t.warehouse.id,
-      name: "Golden",
-      paymentTermsDays: "30",
-    });
+  it("customer: one opening balance on one account, and the list shows it", async () => {
     const customer = await createCustomer(t.ctx, {
       name: "Ali",
       type: "RETAILER",
-      openingBalances: { [t.company.id]: "5000", [other.id]: "" },
+      openingBalance: "5000",
     });
     await updateCustomer(t.ctx, customer.id, {
       name: "Ali",
       type: "RETAILER",
-      openingBalances: { [t.company.id]: "4000", [other.id]: "-250" },
+      openingBalance: "3750",
     });
+    // Blank leaves it as it is.
+    await updateCustomer(t.ctx, customer.id, { name: "Ali", type: "RETAILER", openingBalance: "" });
     const full = await getCustomer(t.ctx, customer.id);
-    expect(full.openingBalances).toEqual({ [t.company.id]: "4000.00", [other.id]: "-250.00" });
+    expect(full.openingBalance).toBe("3750.00");
     const list = await listCustomers(t.ctx, listAll);
     expect(list.rows[0]!.balance).toBe("3750.00");
-    // Every customer entry carries a company (CLAUDE.md rule 3).
-    const entries = await t.ctx.db.ledgerEntry.findMany({ where: { customerId: customer.id } });
-    expect(entries.every((e) => e.companyId)).toBe(true);
+    // Customers have one account: no entry carries a company; the change posted the difference.
+    const entries = await t.ctx.db.ledgerEntry.findMany({
+      where: { customerId: customer.id },
+      orderBy: { createdAt: "asc" },
+    });
+    expect(entries.map((e) => [e.companyId, e.debit.toFixed(2), e.credit.toFixed(2)])).toEqual([
+      [null, "5000.00", "0.00"],
+      [null, "0.00", "1250.00"],
+    ]);
   });
 });
 
@@ -374,7 +377,7 @@ describe("deactivate instead of delete once used", () => {
     const customer = await createCustomer(t.ctx, {
       name: "Ali",
       type: "RETAILER",
-      openingBalances: { [t.company.id]: "100" },
+      openingBalance: "100",
     });
     await expect(deleteRecord(t.ctx, "Customer", { id: customer.id })).rejects.toThrow(
       ServiceError,
@@ -456,13 +459,6 @@ describe("references and tenant isolation", () => {
     await expect(createProduct(t.ctx, productInput(other.company.id))).rejects.toThrow(
       "active company",
     );
-    await expect(
-      createCustomer(t.ctx, {
-        name: "X",
-        type: "RETAILER",
-        openingBalances: { [other.company.id]: "10" },
-      }),
-    ).rejects.toThrow("unknown company");
     expect(
       (await prisma.warehouse.findUniqueOrThrow({ where: { id: other.warehouse.id } })).name,
     ).toBe("Main");

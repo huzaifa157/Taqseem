@@ -3,16 +3,21 @@ import "server-only";
 import { Prisma } from "@/generated/prisma/client";
 import type { PaymentMethod } from "@/generated/prisma/enums";
 import { businessToday } from "@/lib/dates";
-import { companyPaymentSchema, reverseSchema } from "@/lib/validation/purchasing";
+import {
+  type CompanyPaymentInput,
+  companyPaymentSchema,
+  reverseSchema,
+} from "@/lib/validation/purchasing";
 import { icontains, matchEveryWord, searchNumber } from "@/lib/list-params";
 
 import { writeAudit } from "../../audit";
 import { assertCan } from "../../auth/permissions";
+import type { TenantTx } from "../../db/tenant";
 import { ServiceError } from "../errors";
 import { PAGE_SIZE, paged, type ServiceCtx } from "../master/common";
 import { found, nextDocumentNumber, postCompanyLedger, reverseLedgerFor } from "../posting";
 import { openBillsFor } from "./bills";
-import { allocateOldestFirst, checkAllocations } from "./calc";
+import { type Allocation, allocateOldestFirst, checkAllocations, type OpenBill } from "./calc";
 import type { DateRange } from "./filters";
 
 // Company payments: full or partial, one payment can settle several bills. By default the amount
@@ -91,7 +96,6 @@ export async function getCompanyPayment(ctx: ServiceCtx, id: string) {
 export async function createCompanyPayment(ctx: ServiceCtx, input: unknown) {
   assertCan(ctx.user.role, "payments.manage");
   const data = companyPaymentSchema.parse(input);
-  const amount = new Prisma.Decimal(data.amount);
 
   // Serializable: two payments entered at the same time must not both use up the same bill.
   return ctx.db.$transaction(
@@ -102,84 +106,99 @@ export async function createCompanyPayment(ctx: ServiceCtx, input: unknown) {
         });
         if (existing) return existing;
       }
-      const company = await tx.company.findUnique({ where: { id: data.companyId } });
-      if (!company) throw new ServiceError("Choose a company.");
-
-      const open = await openBillsFor(tx, company.id);
-      const allocations =
-        data.allocationMode === "auto"
-          ? allocateOldestFirst(amount, open)
-          : data.allocations.map((a) => ({
-              billId: a.billId,
-              amount: new Prisma.Decimal(a.amount),
-            }));
-      const errors = checkAllocations(amount, allocations, open);
-      if (errors.length > 0) throw new ServiceError(errors.join(" "));
-
-      const cheque =
-        data.method === "CHEQUE"
-          ? await tx.cheque.create({
-              data: {
-                tenantId: ctx.user.tenantId,
-                direction: "ISSUED",
-                chequeNo: data.chequeNo!,
-                bankName: data.bankName!,
-                chequeDate: data.chequeDate!,
-                amount,
-              },
-            })
-          : null;
-
-      const payment = await tx.companyPayment.create({
-        data: {
-          tenantId: ctx.user.tenantId,
-          number: await nextDocumentNumber(tx, ctx, "COMPANY_PAYMENT"),
-          companyId: company.id,
-          paymentDate: data.paymentDate,
-          method: data.method,
-          amount,
-          reference: data.reference,
-          chequeId: cheque?.id ?? null,
-          note: data.note,
-          requestId: data.requestId,
-          createdById: ctx.user.id,
-        },
-      });
-      if (allocations.length > 0) {
-        await tx.companyPaymentAllocation.createMany({
-          data: allocations.map((a) => ({
-            tenantId: ctx.user.tenantId,
-            companyPaymentId: payment.id,
-            companyBillId: a.billId,
-            companyId: company.id,
-            amount: a.amount,
-          })),
-        });
-      }
-      const billNumbers = allocations.map((a) => `#${open.find((b) => b.id === a.billId)!.number}`);
-      await postCompanyLedger(tx, ctx, {
-        companyId: company.id,
-        type: "COMPANY_PAYMENT",
-        entryDate: data.paymentDate,
-        debit: amount,
-        description: `Payment #${payment.number} (${METHOD_LABEL[data.method]}${data.method === "CHEQUE" ? ` ${data.chequeNo}` : data.reference ? ` ${data.reference}` : ""})${billNumbers.length ? ` for bills ${billNumbers.join(", ")}` : ""}`,
-        referenceType: "CompanyPayment",
-        referenceId: payment.id,
-      });
-      await writeAudit(tx, ctx.user, {
-        action: "POST",
-        entityType: "CompanyPayment",
-        entityId: payment.id,
-        newValue: {
-          ...payment,
-          allocations: allocations.map((a) => ({ billId: a.billId, amount: a.amount })),
-        },
-        requestId: data.requestId,
-      });
-      return payment;
+      return postCompanyPayment(tx, ctx, data);
     },
     { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
   );
+}
+
+/**
+ * Posts a payment to a company inside the caller's transaction: oldest bills first, the
+ * allocations typed, or (`given`) allocations worked out by the caller. Any rest is an advance.
+ */
+export async function postCompanyPayment(
+  tx: TenantTx,
+  ctx: ServiceCtx,
+  data: CompanyPaymentInput,
+  given?: (open: OpenBill[]) => Allocation[],
+) {
+  const amount = new Prisma.Decimal(data.amount);
+  const company = await tx.company.findUnique({ where: { id: data.companyId } });
+  if (!company) throw new ServiceError("Choose a company.");
+
+  const open = await openBillsFor(tx, company.id);
+  const allocations = given
+    ? given(open)
+    : data.allocationMode === "auto"
+      ? allocateOldestFirst(amount, open)
+      : data.allocations.map((a) => ({
+          billId: a.billId,
+          amount: new Prisma.Decimal(a.amount),
+        }));
+  const errors = checkAllocations(amount, allocations, open);
+  if (errors.length > 0) throw new ServiceError(errors.join(" "));
+
+  const cheque =
+    data.method === "CHEQUE"
+      ? await tx.cheque.create({
+          data: {
+            tenantId: ctx.user.tenantId,
+            direction: "ISSUED",
+            chequeNo: data.chequeNo!,
+            bankName: data.bankName!,
+            chequeDate: data.chequeDate!,
+            amount,
+          },
+        })
+      : null;
+
+  const payment = await tx.companyPayment.create({
+    data: {
+      tenantId: ctx.user.tenantId,
+      number: await nextDocumentNumber(tx, ctx, "COMPANY_PAYMENT"),
+      companyId: company.id,
+      paymentDate: data.paymentDate,
+      method: data.method,
+      amount,
+      reference: data.reference,
+      chequeId: cheque?.id ?? null,
+      note: data.note,
+      requestId: data.requestId,
+      createdById: ctx.user.id,
+    },
+  });
+  if (allocations.length > 0) {
+    await tx.companyPaymentAllocation.createMany({
+      data: allocations.map((a) => ({
+        tenantId: ctx.user.tenantId,
+        companyPaymentId: payment.id,
+        companyBillId: a.billId,
+        companyId: company.id,
+        amount: a.amount,
+      })),
+    });
+  }
+  const billNumbers = allocations.map((a) => `#${open.find((b) => b.id === a.billId)!.number}`);
+  await postCompanyLedger(tx, ctx, {
+    companyId: company.id,
+    type: "COMPANY_PAYMENT",
+    entryDate: data.paymentDate,
+    debit: amount,
+    description: `Payment #${payment.number} (${METHOD_LABEL[data.method]}${data.method === "CHEQUE" ? ` ${data.chequeNo}` : data.reference ? ` ${data.reference}` : ""})${billNumbers.length ? ` for bills ${billNumbers.join(", ")}` : ""}`,
+    referenceType: "CompanyPayment",
+    referenceId: payment.id,
+  });
+  await writeAudit(tx, ctx.user, {
+    action: "POST",
+    entityType: "CompanyPayment",
+    entityId: payment.id,
+    newValue: {
+      ...payment,
+      allocations: allocations.map((a) => ({ billId: a.billId, amount: a.amount })),
+    },
+    requestId: data.requestId,
+  });
+  return payment;
 }
 
 /** Reverses a payment entered by mistake or a bounced cheque; its bills become unpaid again. */

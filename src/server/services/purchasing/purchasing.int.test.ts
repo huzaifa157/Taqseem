@@ -19,6 +19,7 @@ import { cancelClaim, createClaim, returnSacks, sackCounts } from "./claims";
 import { getCompanyLedger } from "./company-ledger";
 import { cancelGoodsReceipt, createGoodsReceipt } from "./goods-receipts";
 import { createCompanyPayment, reverseCompanyPayment } from "./payments";
+import { createPurchase } from "./purchases";
 import {
   createPurchaseOrder,
   getPurchaseOrder,
@@ -203,6 +204,73 @@ describe("goods receipts", () => {
     const b = await receive(t.ctx, { lines: [{ productId: t.p1.id, quantity: "1" }] });
     expect([a.number, b.number]).toEqual([1, 2]);
     expect([a.companyBill.number, b.companyBill.number]).toEqual([1, 2]);
+  });
+});
+
+describe("purchase in one step", () => {
+  const buy = (extra: Record<string, unknown>, ctx = t.ctx) =>
+    createPurchase(ctx, {
+      companyId: t.company.id,
+      receivedDate: "2026-10-10",
+      lines: [
+        { productId: t.p1.id, quantity: "2" },
+        { productId: t.p2.id, quantity: "1.5" },
+      ],
+      ...extra,
+    }); // 2 × 1200 + 1.5 × 600 = 3300
+
+  const paymentsFor = (billId: string) =>
+    t.ctx.db.companyPaymentAllocation.findMany({ where: { companyBillId: billId } });
+
+  it("adds the stock and the bill, and nothing paid leaves it all owed", async () => {
+    const { receipt } = await buy({ paidAmount: "" });
+    expect([await stockOf(t.p1.id), await stockOf(t.p2.id)]).toEqual([24, 18]);
+    const bill = await getCompanyBill(t.ctx, receipt.companyBill.id);
+    expect([D(bill.netAmount), bill.state.status, D(bill.state.outstanding)]).toEqual([
+      "3300.00",
+      "UNPAID",
+      "3300.00",
+    ]);
+    expect(await t.ctx.db.companyPayment.count()).toBe(0);
+    expect(receipt.purchaseOrderId).toBeNull();
+  });
+
+  it("records a part payment against this purchase's bill", async () => {
+    const { receipt } = await buy({ paidAmount: "1000", method: "CASH" });
+    const bill = await getCompanyBill(t.ctx, receipt.companyBill.id);
+    expect([bill.state.status, D(bill.state.outstanding)]).toEqual(["PARTIAL", "2300.00"]);
+    const ledger = await getCompanyLedger(t.ctx, t.company.id, {});
+    expect(D(ledger.closing)).toBe("2300.00");
+  });
+
+  it("pays this bill first, then older ones; anything over is an advance", async () => {
+    const older = await receive(t.ctx, {
+      receivedDate: "2026-10-01",
+      lines: [{ productId: t.p1.id, quantity: "1" }],
+    }); // 1200
+    const { receipt } = await buy({ paidAmount: "5000" });
+    expect((await paymentsFor(receipt.companyBill.id)).map((a) => D(a.amount))).toEqual([
+      "3300.00",
+    ]);
+    expect((await paymentsFor(older.companyBill.id)).map((a) => D(a.amount))).toEqual(["1200.00"]);
+    const advances = await companyAdvances(t.ctx.db, t.company.id);
+    expect(advances.reduce((s, a) => s.add(a.left), new Prisma.Decimal(0)).toFixed(2)).toBe(
+      "500.00",
+    );
+  });
+
+  it("needs cheque details for a cheque, and retries never post twice", async () => {
+    await expect(buy({ paidAmount: "100", method: "CHEQUE" })).rejects.toThrow(/cheque number/);
+    const requestId = randomUUID();
+    const first = await buy({ requestId, paidAmount: "100" });
+    const again = await buy({ requestId, paidAmount: "100" });
+    expect(again.receipt.id).toBe(first.receipt.id);
+    expect(await t.ctx.db.companyPayment.count()).toBe(1);
+  });
+
+  it("staff can enter what came in, but not a payment", async () => {
+    await buy({ paidAmount: "" }, t.as("STAFF"));
+    await expect(buy({ paidAmount: "100" }, t.as("STAFF"))).rejects.toThrow(ForbiddenError);
   });
 });
 

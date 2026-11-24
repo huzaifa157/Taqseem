@@ -17,11 +17,7 @@ import { assertCan } from "../../auth/permissions";
 import type { TenantTx } from "../../db/tenant";
 import { ServiceError } from "../errors";
 import { changedFields, PAGE_SIZE, paged, type ServiceCtx, withUniqueMessage } from "./common";
-import {
-  customerBalances,
-  getCustomerOpeningBalances,
-  setOpeningBalance,
-} from "./opening-balances";
+import { customerBalances, getOpeningBalance, setOpeningBalance } from "./opening-balances";
 
 /** The customer list's search and filters (also used by the export). */
 function customerWhere(
@@ -98,13 +94,8 @@ export async function getCustomer(ctx: ServiceCtx, id: string) {
     include: { area: { select: { name: true, warehouse: { select: { name: true } } } } },
   });
   if (!row) throw new ServiceError("This customer was not found.");
-  const openings = await getCustomerOpeningBalances(ctx.db, id);
-  return {
-    ...row,
-    openingBalances: Object.fromEntries(
-      Object.entries(openings).map(([companyId, v]) => [companyId, v.toFixed(2)]),
-    ),
-  };
+  const opening = await getOpeningBalance(ctx.db, { kind: "CUSTOMER", customerId: id });
+  return { ...row, openingBalance: opening.toFixed(2) };
 }
 
 async function assertArea(tx: TenantTx, areaId: string | null) {
@@ -114,33 +105,15 @@ async function assertArea(tx: TenantTx, areaId: string | null) {
 }
 
 /** Posts opening-balance changes per company; returns { companyId: { from, to } } for the audit log. */
-async function applyOpeningBalances(
+/** Sets the customer's opening balance (undefined: leave it); returns the change, if any. */
+async function applyOpeningBalance(
   tx: TenantTx,
   ctx: ServiceCtx,
   customerId: string,
-  balances: Record<string, string>,
+  balance: string | undefined,
 ) {
-  const changes: Record<string, { from: string; to: string }> = {};
-  const companyIds = Object.keys(balances);
-  if (companyIds.length === 0) return changes;
-  const known = await tx.company.findMany({
-    where: { id: { in: companyIds } },
-    select: { id: true },
-  });
-  if (known.length !== companyIds.length)
-    throw new ServiceError("An opening balance refers to an unknown company.");
-  const today = businessToday();
-  for (const companyId of companyIds) {
-    const change = await setOpeningBalance(
-      tx,
-      ctx,
-      { kind: "CUSTOMER", customerId, companyId },
-      balances[companyId]!,
-      today,
-    );
-    if (change) changes[companyId] = change;
-  }
-  return changes;
+  if (balance === undefined) return null;
+  return setOpeningBalance(tx, ctx, { kind: "CUSTOMER", customerId }, balance, businessToday());
 }
 
 /** A customer name as stored: trimmed, single spaces. */
@@ -177,7 +150,7 @@ export async function createCustomerTx(
   parsed: CustomerInput,
   requestId?: string,
 ) {
-  const { requestId: _r, openingBalances, ...data } = parsed;
+  const { requestId: _r, openingBalance, ...data } = parsed;
   if (requestId) {
     const existing = await tx.customer.findUnique({
       where: { tenantId_requestId: { tenantId: ctx.user.tenantId, requestId } },
@@ -191,12 +164,12 @@ export async function createCustomerTx(
   const created = await withUniqueMessage(NAME_TAKEN, () =>
     tx.customer.create({ data: { tenantId: ctx.user.tenantId, requestId, ...data } }),
   );
-  const openings = await applyOpeningBalances(tx, ctx, created.id, openingBalances);
+  const opening = await applyOpeningBalance(tx, ctx, created.id, openingBalance);
   await writeAudit(tx, ctx.user, {
     action: "CREATE",
     entityType: "Customer",
     entityId: created.id,
-    newValue: { ...created, openingBalances: openings },
+    newValue: { ...created, openingBalance: opening?.to ?? null },
     requestId,
   });
   return created;
@@ -210,7 +183,7 @@ export async function createCustomer(ctx: ServiceCtx, input: unknown) {
 
 export async function updateCustomer(ctx: ServiceCtx, id: string, input: unknown) {
   assertCan(ctx.user.role, "masterData.manage");
-  const { requestId: _ignored, openingBalances, ...data } = customerSchema.parse(input);
+  const { requestId: _ignored, openingBalance, ...data } = customerSchema.parse(input);
   return ctx.db.$transaction(async (tx) => {
     const before = await tx.customer.findUnique({ where: { id } });
     if (!before) throw new ServiceError("This customer was not found.");
@@ -221,17 +194,13 @@ export async function updateCustomer(ctx: ServiceCtx, id: string, input: unknown
     const after = await withUniqueMessage(NAME_TAKEN, () =>
       tx.customer.update({ where: { id }, data }),
     );
-    const openings = await applyOpeningBalances(tx, ctx, id, openingBalances);
+    const opening = await applyOpeningBalance(tx, ctx, id, openingBalance);
     const diff = changedFields(before, after);
-    if (Object.keys(openings).length > 0) {
-      diff.oldValue.openingBalances = Object.fromEntries(
-        Object.entries(openings).map(([k, v]) => [k, v.from]),
-      );
-      diff.newValue.openingBalances = Object.fromEntries(
-        Object.entries(openings).map(([k, v]) => [k, v.to]),
-      );
+    if (opening) {
+      diff.oldValue.openingBalance = opening.from;
+      diff.newValue.openingBalance = opening.to;
     }
-    if (diff.changed || Object.keys(openings).length > 0) {
+    if (diff.changed || opening) {
       await writeAudit(tx, ctx.user, {
         action: "UPDATE",
         entityType: "Customer",

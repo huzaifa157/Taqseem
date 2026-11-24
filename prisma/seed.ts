@@ -677,25 +677,22 @@ async function main() {
         });
         customers.push({ id: customer.id, warehouseKey: area.warehouse });
 
-        for (const company of companies.filter((c) => c.warehouseKey === area.warehouse)) {
-          if (rand() < 0.5) continue;
+        // Customers have one account (no company split): about half start with a balance.
+        if (rand() < 0.5)
           await tx.ledgerEntry.create({
             data: {
               tenantId,
               partyType: "CUSTOMER",
               customerId: customer.id,
-              companyId: company.id,
               type: "OPENING_BALANCE",
               entryDate: day(-30),
-              debit: between(5, 60) * 100,
+              debit: between(5, 100) * 100,
               description: "Opening balance",
               createdById,
             },
           });
-        }
 
-        // Some customers still owe on paper bills from before the app: their old balance, owed
-        // to us and not to any company (no companyId; CLAUDE.md rule 3 exception).
+        // Some customers still owe on paper bills from before the app: their old balance.
         if (i % 6 === 0) {
           const oldBill = await tx.customerOldBill.create({
             data: {
@@ -712,7 +709,6 @@ async function main() {
               tenantId,
               partyType: "CUSTOMER",
               customerId: customer.id,
-              companyId: null,
               type: "OPENING_BALANCE",
               entryDate: oldBill.billDate,
               debit: oldBill.amount,
@@ -1048,15 +1044,6 @@ async function main() {
           postedAt: day(-2),
         },
       });
-      const previousByCompany = await tx.ledgerEntry.groupBy({
-        by: ["companyId"],
-        where: { tenantId, partyType: "CUSTOMER", customerId: deliveredCustomer.id },
-        _sum: { debit: true, credit: true },
-      });
-      const previousFor = (companyId: string) => {
-        const g = previousByCompany.find((p) => p.companyId === companyId);
-        return (g?._sum.debit ?? new Prisma.Decimal(0)).sub(g?._sum.credit ?? 0).toFixed(2);
-      };
       await tx.billRevision.create({
         data: {
           tenantId,
@@ -1070,15 +1057,6 @@ async function main() {
             netAmount: t.netAmount.toFixed(2),
           })),
           createdById,
-        },
-      });
-      // Frozen at dispatch: what the customer owed each company before this bill.
-      await tx.bill.update({
-        where: { id: bill.id },
-        data: {
-          previousByCompany: previousByCompany
-            .filter((g) => g.companyId)
-            .map((g) => ({ companyId: g.companyId!, amount: previousFor(g.companyId!) })),
         },
       });
       // It went out on Bike 1, and day-end was entered for it.
@@ -1105,23 +1083,20 @@ async function main() {
           reconciledById: createdById,
         },
       });
-      for (const [companyId, t] of byCompany) {
-        await tx.ledgerEntry.create({
-          data: {
-            tenantId,
-            partyType: "CUSTOMER",
-            customerId: deliveredCustomer.id,
-            companyId,
-            type: "SALES_BILL",
-            entryDate: day(-2),
-            debit: t.netAmount,
-            description: `Bill #${bill.number}`,
-            referenceType: "Bill",
-            referenceId: bill.id,
-            createdById,
-          },
-        });
-      }
+      await tx.ledgerEntry.create({
+        data: {
+          tenantId,
+          partyType: "CUSTOMER",
+          customerId: deliveredCustomer.id,
+          type: "SALES_BILL",
+          entryDate: day(-2),
+          debit: totals.netAmount,
+          description: `Bill #${bill.number}`,
+          referenceType: "Bill",
+          referenceId: bill.id,
+          createdById,
+        },
+      });
       for (const line of delivered.lines) {
         await tx.stockMovement.create({
           data: {
@@ -1139,7 +1114,7 @@ async function main() {
         });
       }
 
-      // Cash collected at delivery: half the bill, split across companies in proportion.
+      // Cash collected at delivery: half the bill.
       const collected = totals.netAmount.div(2).toDecimalPlaces(0, Prisma.Decimal.ROUND_DOWN);
       const payment = await tx.customerPayment.create({
         data: {
@@ -1154,36 +1129,23 @@ async function main() {
           createdById,
         },
       });
-      let allocated = new Prisma.Decimal(0);
-      const companySlices = [...byCompany];
-      for (const [index, [companyId, t]] of companySlices.entries()) {
-        const amount =
-          index === companySlices.length - 1
-            ? collected.sub(allocated)
-            : collected
-                .mul(t.netAmount)
-                .div(totals.netAmount)
-                .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
-        allocated = allocated.add(amount);
-        await tx.paymentAllocation.create({
-          data: { tenantId, customerPaymentId: payment.id, billId: bill.id, companyId, amount },
-        });
-        await tx.ledgerEntry.create({
-          data: {
-            tenantId,
-            partyType: "CUSTOMER",
-            customerId: deliveredCustomer.id,
-            companyId,
-            type: "CUSTOMER_PAYMENT",
-            entryDate: day(-2),
-            credit: amount,
-            description: `Cash received, payment #${payment.number}`,
-            referenceType: "CustomerPayment",
-            referenceId: payment.id,
-            createdById,
-          },
-        });
-      }
+      await tx.paymentAllocation.create({
+        data: { tenantId, customerPaymentId: payment.id, billId: bill.id, amount: collected },
+      });
+      await tx.ledgerEntry.create({
+        data: {
+          tenantId,
+          partyType: "CUSTOMER",
+          customerId: deliveredCustomer.id,
+          type: "CUSTOMER_PAYMENT",
+          entryDate: day(-2),
+          credit: collected,
+          description: `Cash received, payment #${payment.number}`,
+          referenceType: "CustomerPayment",
+          referenceId: payment.id,
+          createdById,
+        },
+      });
 
       // One half dozen damaged in that delivery → damaged stock, claim against the company, and
       // the bill revised at day-end (the customer is not charged for it).
@@ -1285,7 +1247,6 @@ async function main() {
           tenantId,
           partyType: "CUSTOMER",
           customerId: deliveredCustomer.id,
-          companyId: damagedLine.companyId,
           type: "BILL_REVISION",
           entryDate: day(-2),
           credit: totals.netAmount.sub(keptTotals.netAmount),

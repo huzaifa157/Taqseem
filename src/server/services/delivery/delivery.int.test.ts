@@ -113,7 +113,7 @@ async function setup() {
   const customer = (name: string, extra: object = {}) =>
     createCustomer(ctx, { name, type: "RETAILER", areaId: area.id, ...extra });
   const ali = await customer("Ali", {
-    openingBalances: { [crunchy.id]: "3000", [golden.id]: "1000" },
+    openingBalance: "4000",
   });
   const bilal = await customer("Bilal");
   return {
@@ -252,7 +252,7 @@ describe("driver sheet", () => {
 });
 
 describe("dispatch", () => {
-  it("takes stock out, posts each bill per company and freezes the previous pending", async () => {
+  it("takes stock out, posts each bill to the customer's one account and freezes the previous balance", async () => {
     const a = await book(t.ali.id, [
       [t.chips.id, "10"],
       [t.nimko.id, "2"],
@@ -265,12 +265,7 @@ describe("dispatch", () => {
     const entries = await t.ctx.db.ledgerEntry.findMany({
       where: { partyType: "CUSTOMER", customerId: t.ali.id, type: "SALES_BILL" },
     });
-    expect(entries.map((e) => [e.companyId, e.debit.toFixed(2)]).sort()).toEqual(
-      [
-        [t.crunchy.id, "1960.00"],
-        [t.golden.id, "300.00"],
-      ].sort(),
-    );
+    expect(entries.map((e) => [e.companyId, e.debit.toFixed(2)])).toEqual([[null, "2260.00"]]);
     const order = await t.ctx.db.salesOrder.findUniqueOrThrow({
       where: { id: a.id },
       include: { bill: true },
@@ -283,12 +278,6 @@ describe("dispatch", () => {
     expect(view.bill.posted).toBe(true);
     expect(view.previous.toFixed(2)).toBe("4000.00");
     expect(view.totalDue.toFixed(2)).toBe("6260.00");
-    expect(
-      view.sections.map((s) => [s.companyName, s.previous.toFixed(2), s.totalDue.toFixed(2)]),
-    ).toEqual([
-      ["Crunchy", "3000.00", "4960.00"],
-      ["Golden", "1000.00", "1300.00"],
-    ]);
 
     await expect(dispatchTrip(t.staff, { id: tr.id })).rejects.toThrow(/already left/);
     await expect(removeOrderFromTrip(t.staff, { tripId: tr.id, orderId: a.id })).rejects.toThrow(
@@ -352,7 +341,7 @@ describe("day-end entry", () => {
     return { a, b, tr };
   }
 
-  it("puts returns back, logs damage as a claim, revises the bill and splits the cash by company", async () => {
+  it("puts returns back, logs damage as a claim, revises the bill and takes the cash", async () => {
     const { a, tr } = await dispatched();
     const result = await saveDayEnd(t.staff, {
       requestId: randomUUID(),
@@ -392,11 +381,11 @@ describe("day-end entry", () => {
     expect(view.bill.revision).toBe(2);
     expect(view.bill.netAmount.toFixed(2)).toBe("1672.00");
     expect(view.lines.find((l) => l.productId === t.chips.id)!.quantity).toBe(84);
-    expect(view.sections[0]!.previous.toFixed(2)).toBe("3000.00");
+    expect(view.previous.toFixed(2)).toBe("4000.00");
     const revision = await t.ctx.db.ledgerEntry.findFirstOrThrow({
       where: { customerId: t.ali.id, type: "BILL_REVISION" },
     });
-    expect([revision.companyId, revision.credit.toFixed(2)]).toEqual([t.crunchy.id, "588.00"]);
+    expect([revision.companyId, revision.credit.toFixed(2)]).toEqual([null, "588.00"]);
 
     // Cash 1000 pays the oldest debt first: the opening balances (Crunchy 3000, Golden 1000).
     const payment = await t.ctx.db.customerPayment.findFirstOrThrow({
@@ -411,10 +400,7 @@ describe("day-end entry", () => {
     const credits = await t.ctx.db.ledgerEntry.findMany({
       where: { customerId: t.ali.id, type: "CUSTOMER_PAYMENT" },
     });
-    expect(Object.fromEntries(credits.map((c) => [c.companyId, c.credit.toFixed(2)]))).toEqual({
-      [t.crunchy.id]: "750.00",
-      [t.golden.id]: "250.00",
-    });
+    expect(credits.map((c) => [c.companyId, c.credit.toFixed(2)])).toEqual([[null, "1000.00"]]);
     expect(payment.allocations).toHaveLength(0);
 
     // Pending now: 4000 + 1672 − 1000.
@@ -546,9 +532,9 @@ describe("returns of earlier goods at day-end", () => {
       orderBy: { credit: "asc" },
     });
     expect(credits.map((c) => [c.companyId, c.credit.toFixed(2)])).toEqual([
-      [t.golden.id, "50.00"],
-      [t.crunchy.id, "98.00"],
-      [t.far.companyId, "180.00"],
+      [null, "50.00"],
+      [null, "98.00"],
+      [null, "180.00"],
     ]);
     // Stock: Faraway's product back into its own warehouse; the chips into damaged stock.
     const farAfter = (await stockPositions(t.ctx.db, t.other.id, [t.far.id])).get(t.far.id)!;
@@ -1094,8 +1080,8 @@ describe("trip day-end on one page", () => {
 });
 
 describe("special discount on the whole bill", () => {
-  it("posts each company's share at dispatch, moves with returns at day-end and comes back on undo", async () => {
-    // Chips 10 dz × 196 = 1960 (Crunchy) + nimko 4 dz × 150 = 600 (Golden) = 2560, less 256.
+  it("is taken off the bill at dispatch, stays with returns at day-end and comes back on undo", async () => {
+    // Chips 10 dz × 196 = 1960 + nimko 4 dz × 150 = 600 = 2560, less 256.
     const a = await book(
       t.bilal.id,
       [
@@ -1106,34 +1092,21 @@ describe("special discount on the whole bill", () => {
     );
     const tr = await trip([a.id]);
     await dispatchTrip(t.staff, { id: tr.id });
-    const pending = () => customerPending(t.ctx.db, t.bilal.id);
-    let p = await pending();
-    expect(p.total.toFixed(2)).toBe("2304.00");
-    // 256 split 1960 : 600 = 196 : 60.
-    expect(p.byCompany.get(t.crunchy.id)!.toFixed(2)).toBe("1764.00");
-    expect(p.byCompany.get(t.golden.id)!.toFixed(2)).toBe("540.00");
+    const pending = async () => (await customerPending(t.ctx.db, t.bilal.id)).total.toFixed(2);
+    expect(await pending()).toBe("2304.00");
     const view = await getBillView(t.staff, a.id);
     expect(view.bill.specialDiscount.toFixed(2)).toBe("256.00");
-    expect(view.sections.map((s) => s.specialDiscount.toFixed(2)).sort()).toEqual([
-      "196.00",
-      "60.00",
-    ]);
 
-    // All the nimko comes back: the whole special discount now falls on the chips.
+    // All the nimko comes back: 1960 kept, less the same 256.
     await saveDayEnd(t.staff, {
       orderId: a.id,
       lines: [{ productId: t.nimko.id, returned: "4", damaged: "" }],
     });
-    p = await pending();
-    expect(p.total.toFixed(2)).toBe("1704.00");
-    expect(p.byCompany.get(t.crunchy.id)!.toFixed(2)).toBe("1704.00");
-    expect(p.byCompany.get(t.golden.id)!.toFixed(2)).toBe("0.00");
+    expect(await pending()).toBe("1704.00");
     const bill = await t.ctx.db.bill.findFirstOrThrow({ where: { salesOrderId: a.id } });
     expect(bill.netAmount.toFixed(2)).toBe("1704.00");
 
     await undoDayEnd(t.ctx, { id: a.id, reason: "wrong order" });
-    p = await pending();
-    expect(p.total.toFixed(2)).toBe("2304.00");
-    expect(p.byCompany.get(t.crunchy.id)!.toFixed(2)).toBe("1764.00");
+    expect(await pending()).toBe("2304.00");
   });
 });

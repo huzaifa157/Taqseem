@@ -2,7 +2,7 @@ import "server-only";
 
 import { z } from "zod";
 
-import type { Prisma } from "@/generated/prisma/client";
+import { Prisma } from "@/generated/prisma/client";
 import type { StockMovementType } from "@/generated/prisma/enums";
 
 import { formatDozens } from "@/lib/units";
@@ -17,7 +17,7 @@ import {
 } from "@/lib/validation/master";
 
 import { writeAudit } from "../audit";
-import { assertCan } from "../auth/permissions";
+import { assertCan, can } from "../auth/permissions";
 import { ServiceError } from "./errors";
 import { PAGE_SIZE, paged, type ServiceCtx } from "./master/common";
 import { found } from "./posting";
@@ -26,7 +26,8 @@ import { stockPositions } from "./sales/positions";
 
 // Inventory (SPEC §5): stock per product per warehouse, always rebuilt from the stock journal.
 // On hand = saleable movements; reserved = booked and planned orders; available = on hand −
-// reserved; damaged = the damaged bucket. Quantities in packets. No costs: staff see this.
+// reserved; damaged = the damaged bucket. Quantities in packets. No costs on screen (staff see
+// it); the printed stock report adds the value at cost only for roles that may see costs.
 
 const returnDamagedSchema = z.object({
   requestId: requestIdSchema,
@@ -56,8 +57,8 @@ export type StockFilters = {
   page: number;
 };
 
-export async function listStock(ctx: ServiceCtx, f: StockFilters) {
-  assertCan(ctx.user.role, "operations.manage");
+/** Every matching product with its stock (no paging), by company then code, and the totals. */
+async function stockRows(ctx: ServiceCtx, f: Omit<StockFilters, "page">) {
   const where: Prisma.ProductWhereInput = {
     isActive: true,
     ...(f.companyId ? { companyId: f.companyId } : {}),
@@ -72,6 +73,7 @@ export async function listStock(ctx: ServiceCtx, f: StockFilters) {
       code: true,
       name: true,
       minStockLevel: true,
+      purchaseRate: true,
       company: { select: { name: true, warehouseId: true, warehouse: { select: { name: true } } } },
     },
   });
@@ -103,6 +105,7 @@ export async function listStock(ctx: ServiceCtx, f: StockFilters) {
         companyName: p.company.name,
         warehouseName: p.company.warehouse.name,
         minStockLevel: p.minStockLevel,
+        purchaseRate: p.purchaseRate,
         ...pos,
         damaged: damaged.get(p.id) ?? 0,
         low: p.minStockLevel > 0 && pos.available < p.minStockLevel,
@@ -115,9 +118,77 @@ export async function listStock(ctx: ServiceCtx, f: StockFilters) {
     damaged: rows.reduce((s, r) => s + r.damaged, 0),
     low: rows.filter((r) => r.low).length,
   };
+  return { rows, totals };
+}
+
+export async function listStock(ctx: ServiceCtx, f: StockFilters) {
+  assertCan(ctx.user.role, "operations.manage");
+  const { rows, totals } = await stockRows(ctx, f);
   return {
-    ...paged(rows.slice((f.page - 1) * PAGE_SIZE, f.page * PAGE_SIZE), rows.length, f.page),
+    ...paged(
+      rows
+        .slice((f.page - 1) * PAGE_SIZE, f.page * PAGE_SIZE)
+        .map(({ purchaseRate: _cost, ...r }) => r),
+      rows.length,
+      f.page,
+    ),
     totals,
+  };
+}
+
+/**
+ * The printed stock report: every matching product, grouped by company (with each company's
+ * totals). Stock value at the purchase rate only for those who may see costs (rule 8).
+ */
+export async function stockReport(ctx: ServiceCtx, f: Omit<StockFilters, "page">) {
+  assertCan(ctx.user.role, "operations.manage");
+  const showValue = can(ctx.user.role, "financials.view");
+  const { rows, totals } = await stockRows(ctx, f);
+  const valueOf = (r: (typeof rows)[number]) =>
+    r.purchaseRate.mul(Math.max(r.onHand, 0)).div(12).toDecimalPlaces(2);
+  const groups: {
+    companyName: string;
+    warehouseName: string;
+    rows: (Omit<(typeof rows)[number], "purchaseRate"> & { value: Prisma.Decimal | null })[];
+    onHand: number;
+    reserved: number;
+    available: number;
+    damaged: number;
+    value: Prisma.Decimal | null;
+  }[] = [];
+  for (const { purchaseRate: _cost, ...r } of rows) {
+    let g = groups.at(-1);
+    if (!g || g.companyName !== r.companyName) {
+      g = {
+        companyName: r.companyName,
+        warehouseName: r.warehouseName,
+        rows: [],
+        onHand: 0,
+        reserved: 0,
+        available: 0,
+        damaged: 0,
+        value: showValue ? new Prisma.Decimal(0) : null,
+      };
+      groups.push(g);
+    }
+    const value = showValue ? valueOf({ ...r, purchaseRate: _cost }) : null;
+    g.rows.push({ ...r, value });
+    g.onHand += r.onHand;
+    g.reserved += r.reserved;
+    g.available += r.available;
+    g.damaged += r.damaged;
+    if (g.value && value) g.value = g.value.add(value);
+  }
+  return {
+    groups,
+    count: rows.length,
+    totals: {
+      ...totals,
+      available: rows.reduce((s, r) => s + r.available, 0),
+      value: showValue ? groups.reduce((s, g) => s.add(g.value!), new Prisma.Decimal(0)) : null,
+    },
+    showValue,
+    warehouses: new Set(rows.map((r) => r.warehouseName)).size,
   };
 }
 
