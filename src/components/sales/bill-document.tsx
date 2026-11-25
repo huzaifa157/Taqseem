@@ -178,22 +178,22 @@ export function BillDocument({
               <>
                 {/* Letterhead left; the bill's number, date and order right. */}
                 <header className="flex items-start justify-between gap-4 border-b-[1.5px] border-black pb-[0.35em]">
-                  {/* The name sits beside the logo, centred on its height. */}
-                  <div className="flex min-w-0 items-center gap-[0.8em]">
+                  {/* With a logo, the logo stands for the business name (owner's choice);
+                      the address and phone go under it. */}
+                  <div className="min-w-0">
                     {business.logoUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element -- a stored data: URL; next/image adds nothing here
                       <img
                         src={business.logoUrl}
-                        alt=""
-                        className="h-[8em] w-auto max-w-[20em] shrink-0 object-contain"
+                        alt={business.name}
+                        className="h-[5em] w-auto max-w-[16em] object-contain object-left"
                       />
-                    ) : null}
-                    <div className="min-w-0">
-                      <p className="text-[1.6em] leading-tight font-bold">{business.name}</p>
-                      <p className={`${MUTED} truncate`}>
-                        {[business.address, business.phone].filter(Boolean).join(" · ")}
-                      </p>
-                    </div>
+                    ) : (
+                      <p className="text-[1.25em] leading-tight font-bold">{business.name}</p>
+                    )}
+                    <p className={`${MUTED} truncate`}>
+                      {[business.address, business.phone].filter(Boolean).join(" · ")}
+                    </p>
                   </div>
                   <div className="shrink-0 text-right">
                     <p className="leading-tight">{billNo}</p>
@@ -450,12 +450,13 @@ export function CompactBillDocument({
             // eslint-disable-next-line @next/next/no-img-element -- a stored data: URL; next/image adds nothing here
             <img
               src={business.logoUrl}
-              alt=""
-              className="h-[3.6em] w-auto max-w-[9em] shrink-0 object-contain"
+              alt={business.name}
+              className="h-[3em] w-auto max-w-[9em] shrink-0 object-contain"
             />
           ) : null}
           <div className="min-w-0">
-            <p className="truncate font-bold">{business.name}</p>
+            {/* The logo stands for the name. */}
+            {business.logoUrl ? null : <p className="truncate font-bold">{business.name}</p>}
             {business.phone ? <p className="text-[0.85em]">{business.phone}</p> : null}
           </div>
         </div>

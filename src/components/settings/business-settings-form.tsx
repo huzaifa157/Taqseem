@@ -6,6 +6,7 @@ import { SelectField, TextField } from "@/components/form/field";
 import { FieldError, FormMessage } from "@/components/form/form-message";
 import { Button } from "@/components/ui/button";
 import { type ActionState, fieldError, idleState, submittedValue } from "@/lib/action-state";
+import { contentBox, removeBackground } from "@/lib/logo-cleanup";
 import { PAPER_LABEL, PAPER_SIZES, type PaperSize } from "@/lib/print";
 
 type Values = {
@@ -203,6 +204,29 @@ export function LogoForm({
   const [rmState, removeAction, removing] = useActionState(remove, idleState);
   const last =
     rmState.status !== "idle" && (upState.status === "idle" || removing) ? rmState : upState;
+  // The cleaned logo that will be uploaded: background removed, edges trimmed.
+  const [preview, setPreview] = useState<{ url: string; note: string } | null>(null);
+  const [cleaning, setCleaning] = useState(false);
+
+  async function onPick(input: HTMLInputElement) {
+    const file = input.files?.[0];
+    setPreview(null);
+    if (!file) return;
+    setCleaning(true);
+    try {
+      const { blob, note } = await cleanLogo(file);
+      const cleaned = new File([blob], "logo.png", { type: "image/png" });
+      const list = new DataTransfer();
+      list.items.add(cleaned);
+      input.files = list.files;
+      setPreview({ url: URL.createObjectURL(cleaned), note });
+    } catch {
+      // Not an image the browser can read: the original goes up and the server checks it.
+    } finally {
+      setCleaning(false);
+    }
+  }
+
   return (
     <div className="space-y-3">
       {logoUrl ? (
@@ -223,15 +247,30 @@ export function LogoForm({
             accept="image/png,image/jpeg,image/webp"
             className="block text-sm"
             aria-describedby="logo-hint"
+            onChange={(e) => void onPick(e.currentTarget)}
           />
           <p id="logo-hint" className="text-muted-foreground text-xs">
-            PNG, JPEG or WebP, up to 200 KB. A dark logo on white prints best.
+            PNG, JPEG or WebP. A plain background around the logo is removed and the empty edges
+            trimmed, so the logo fills its space on the bill.
           </p>
         </div>
-        <Button type="submit" variant="secondary" disabled={uploading}>
+        <Button type="submit" variant="secondary" disabled={uploading || cleaning}>
           {uploading ? "Uploading…" : "Upload"}
         </Button>
       </form>
+      {cleaning ? <p className="text-muted-foreground text-sm">Preparing the logo…</p> : null}
+      {preview ? (
+        <div className="space-y-1">
+          <p className="text-sm font-medium">This will be printed on the bill:</p>
+          {/* eslint-disable-next-line @next/next/no-img-element -- a local preview (blob: URL) */}
+          <img
+            src={preview.url}
+            alt="Logo to upload"
+            className="h-24 w-auto max-w-full border border-dashed bg-white"
+          />
+          <p className="text-muted-foreground text-xs">{preview.note} Press Upload to save it.</p>
+        </div>
+      ) : null}
       {logoUrl ? (
         <form action={removeAction}>
           <Button type="submit" variant="outline" size="sm" disabled={removing}>
@@ -242,4 +281,53 @@ export function LogoForm({
       <FormMessage state={last} />
     </div>
   );
+}
+
+/** Largest side of the stored logo: sharp on a bill, small enough to store. */
+const LOGO_MAX_SIDE = 800;
+/** Under the server's 200 KB limit. */
+const LOGO_MAX_BYTES = 190 * 1024;
+
+/** Removes a plain background, trims the empty edges and saves the logo as a PNG. */
+async function cleanLogo(file: File): Promise<{ blob: Blob; note: string }> {
+  const bitmap = await createImageBitmap(file);
+  // Work on at most 1600 px so a large photo stays quick.
+  const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
+  const work = document.createElement("canvas");
+  work.width = Math.round(bitmap.width * scale);
+  work.height = Math.round(bitmap.height * scale);
+  const ctx = work.getContext("2d", { willReadFrequently: true })!;
+  ctx.drawImage(bitmap, 0, 0, work.width, work.height);
+  const pixels = ctx.getImageData(0, 0, work.width, work.height);
+  const img = { data: pixels.data, width: work.width, height: work.height };
+  const removed = removeBackground(img);
+  ctx.putImageData(pixels, 0, 0);
+  const box = contentBox(img) ?? { x: 0, y: 0, width: work.width, height: work.height };
+  const trimmed = box.width < work.width * 0.97 || box.height < work.height * 0.97;
+
+  let side = Math.min(LOGO_MAX_SIDE, Math.max(box.width, box.height));
+  for (;;) {
+    const k = side / Math.max(box.width, box.height);
+    const out = document.createElement("canvas");
+    out.width = Math.max(1, Math.round(box.width * k));
+    out.height = Math.max(1, Math.round(box.height * k));
+    out
+      .getContext("2d")!
+      .drawImage(work, box.x, box.y, box.width, box.height, 0, 0, out.width, out.height);
+    const blob = await new Promise<Blob>((resolve, reject) =>
+      out.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob"))), "image/png"),
+    );
+    if (blob.size <= LOGO_MAX_BYTES || side <= 200) {
+      const note =
+        removed && trimmed
+          ? "Background removed and empty edges trimmed."
+          : removed
+            ? "Background removed."
+            : trimmed
+              ? "Empty edges trimmed."
+              : "No plain background found; the logo is kept as it is.";
+      return { blob, note };
+    }
+    side = Math.round(side * 0.8);
+  }
 }

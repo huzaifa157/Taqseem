@@ -2,6 +2,21 @@
 
 Running log of what has been built, decisions taken, and open items. Newest first.
 
+## Logo cleanup on upload — done
+
+Owner's report (2026-11-25, bill #111): the logo printed as a small mark inside a grey square.
+
+- Settings → Printing → Upload logo now cleans the picture in the browser before it is sent
+  (`src/lib/logo-cleanup.ts`, unit-tested): a plain background colour running around the edge
+  becomes transparent (flood fill from the border, so white inside the logo stays; soft edges),
+  the empty edges are trimmed, and it is saved as a PNG of at most 800 px, under 200 KB. A preview
+  shows what will print before Upload.
+- A logo already stored is not changed: upload it again once to get the cleaned version.
+- Owner's follow-up: the 8 em logo with the name beside it looked wrong. Now, when there is a logo,
+  the bill shows the logo (5 em tall) in place of the business name, with the address and phone
+  under it (the compact bill: 3 em logo, no name). The name is still required: reports and later
+  bill pages use it. `FIRST_HEAD_EM` 14.1 → 12.6 (measured 11.75).
+
 ## Bigger logo on the bill — done
 
 Owner's request (2026-11-25). A5/A4 bill logo 4.4 → 8 em tall (max width 12 → 20 em), with the
