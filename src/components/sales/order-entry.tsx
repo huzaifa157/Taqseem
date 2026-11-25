@@ -147,6 +147,8 @@ export function OrderEntry({
     lines?: Line[];
     /** Rupees off the whole bill, as saved (blank: none). */
     specialDiscount?: string;
+    /** Correcting a counter sale: the damage already deducted from it. */
+    damage?: { productId: string; qty: string; rate: string | null }[];
     /** Correcting a counter sale: what was paid at the counter (`full`: the whole bill). */
     payment?: {
       amount: string;
@@ -203,7 +205,7 @@ export function OrderEntry({
   const [damageOpen, setDamageOpen] = useState(false);
   const [damageLines, setDamageLines] = useState<
     { productId: string; qty: string; rate: string | null }[]
-  >([]);
+  >(initial.damage ?? []);
   const damageSearch = useRef<HTMLInputElement>(null);
   const [allowOver, setAllowOver] = useState(false);
   // A customer not in the list yet: created with the order from name and phone.
@@ -1059,13 +1061,9 @@ export function OrderEntry({
                   variant="outline"
                   size="sm"
                   className="h-9"
-                  disabled={!hasProducts || isNewCustomer}
+                  disabled={!hasProducts}
                   aria-expanded={damageOpen}
-                  title={
-                    isNewCustomer
-                      ? "Save the customer first to deduct damage"
-                      : "Damaged goods the customer brought back, deducted from this bill"
-                  }
+                  title="Damaged goods the customer brought back, deducted from this bill. To replace damage, add the new items to the bill as usual."
                   onClick={() => {
                     setDamageOpen((o) => !o);
                     setTimeout(() => damageSearch.current?.focus(), 0);

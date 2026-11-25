@@ -2,6 +2,68 @@
 
 Running log of what has been built, decisions taken, and open items. Newest first.
 
+## Bigger logo on the bill — done
+
+Owner's request (2026-11-25). A5/A4 bill logo 4.4 → 8 em tall (max width 12 → 20 em), with the
+business name beside it, centred on its height, at 1.6 em (was 1.25); compact bill logo 2.6 →
+3.6 em. `FIRST_HEAD_EM` 10.5 → 14.1 (measured head 13.6 em), so page 1 holds about two lines fewer
+and still never spills.
+
+## Counter sale damage: corrections and new customers — done
+
+Owner's report (2026-11-25): replacing damage with another item, and deducting damage from the
+bill, did not work on the counter sale.
+
+- **Correct counter sale** showed "− Damage" but the correction ignored it. `editCounterSale` now
+  loads the damage already deducted (`counterSaleDamage`, shown in the form), keeps it when
+  unchanged, and otherwise cancels the old damage entry (mirror entries on the sale day, through
+  the new `reverseDamageEntry`) and posts the corrected one. The credit check and "Full" payment
+  count the damage.
+- **New customer** typed on the counter: "− Damage" was disabled ("save the customer first"). Now
+  allowed; the damage is priced at the list rate (a new customer has no saved discounts).
+- Replacement = the new items as bill lines + the damaged items under "− Damage"; damage worth as
+  much as the new goods or more leaves nothing to pay (the extra stays as credit).
+
+## Sign-in no longer ends during the day — done
+
+Owner's report (2026-11-25): the app showed an error and logged out about once a day.
+
+- Cause: the session cookie was set for 8 hours at login and never renewed, because server
+  components cannot set cookies and the proxy only checked that a cookie existed. So the session
+  ended 8 hours after login, even while people were working.
+- `src/proxy.ts` now runs through Auth.js `auth()`, which renews the cookie on every page visit and
+  action, and sends a missing or invalid session to the login page.
+- The idle timeout is now 7 days (`src/auth.ts`). Signing out, a password change or deactivating
+  the user still ends the session at once.
+- Open: an action sent with an already-ended session still shows the error screen rather than the
+  login page; rare now.
+
+## Cash book: opening cash, running balance, cash in / out, nightly count — done
+
+Owner's request (2026-11-25): a place to enter cash in hand, all four parts.
+
+- **Cash book** page (`/cash`, sidebar after Payments, no Alt+number; owner and accountant,
+  payments.manage). Migration `20261125120000_cash_book`: `CashEntry` (numbered, kind OPENING /
+  ADDED / TAKEN_OUT / BANK_DEPOSIT / BANK_WITHDRAWAL / COUNT_DIFFERENCE, direction IN / OUT,
+  cancelled with a reason, never edited, request id) and `CashCount` (one per day, a recount
+  replaces it, keeps what the book said).
+- **Running balance** (`services/cash-book.ts`, `computeCashBook`): each day opens with the day
+  before's closing; closing = opening + customer payments in cash − cash expenses − cash company
+  payments + put in / from bank − taken out / to bank ± count differences. Sales, payments and
+  expenses are read from their own tables (no second entry). Days before the opening cash are
+  left out; without opening cash the book starts at zero on the first cash day.
+- **Opening cash**: one at a time; saving a new one cancels the old and restarts the book from
+  its date. No future dates.
+- **Count**: the night's total; shows short / extra against the book. "Set the book to the
+  count" (ticked by default) posts the difference as a COUNT_DIFFERENCE entry so the next day
+  starts from the real cash.
+- **Daily report**: with opening cash set, the Cash in hand box shows opening cash, the day's
+  cash, put in / taken out, closing cash, cash counted and short / extra; the figure at the top
+  becomes "Cash in hand (end of day)". Attention list: book below zero (instead of "more cash
+  went out than came in"), and a count that did not match. Excel export adds opening, closing,
+  counted.
+- Clear entries keeps cash entries and counts (like expenses).
+
 ## Trip date correction, repeating and monthly expenses, selling past stock — done
 
 - **Change a trip's date** (trip page, documents.reverse; `services/delivery/trip-date.ts`):

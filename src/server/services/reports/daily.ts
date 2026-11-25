@@ -5,6 +5,7 @@ import { calculateLineAmounts } from "@/lib/pricing";
 import { formatDozens, PACKETS_PER_DOZEN } from "@/lib/units";
 
 import { assertCan, can } from "../../auth/permissions";
+import { cashDay } from "../cash-book";
 import type { ServiceCtx } from "../master/common";
 
 // Daily summary (SPEC §10 "Daily summary"): the numbers to check at day-end, for one business
@@ -472,6 +473,9 @@ async function moneyFor(ctx: ServiceCtx, date: Date, next: Date) {
     (p) => p._sum.amount,
   );
   const cash = byMethod("CASH");
+  // The cash book's day: opening (the day before's closing), cash put in or taken out, closing,
+  // and the night's count.
+  const book = await cashDay(ctx.db, date);
 
   const customerById = new Map(customers.map((c) => [c.id, c]));
   const owing = pendingRows
@@ -528,6 +532,17 @@ async function moneyFor(ctx: ServiceCtx, date: Date, next: Date) {
       expenses: cashExpenses,
       toCompanies: cashToCompanies,
       net: cash.total.sub(cashExpenses).sub(cashToCompanies),
+      /** From the cash book; null for a day before the opening cash. */
+      book: book.day
+        ? {
+            hasOpening: book.hasOpening,
+            opening: book.day.opening,
+            added: book.day.added,
+            taken: book.day.taken,
+            closing: book.day.closing,
+            count: book.day.count,
+          }
+        : null,
     },
     pending: {
       total: sum(owing, (c) => c.balance),
@@ -687,11 +702,20 @@ function dayIssues(d: {
       `Stock below zero for ${names(negative.map((s) => s.code))}: sold before the purchase was entered. Enter the purchase (or check the count).`,
       "/purchases/new",
     );
-  if (d.money && d.money.cashInHand.net.lt(0))
+  const book = d.money?.cashInHand.book;
+  if (book?.hasOpening ? book.closing.lt(0) : d.money && d.money.cashInHand.net.lt(0))
     add(
       "problem",
-      `More cash went out than came in (${d.money.cashInHand.net.toFixed(2)}). Check the expenses and company payments.`,
-      `/expenses?from=${day}&to=${day}`,
+      book?.hasOpening
+        ? `The cash book is below zero at the end of the day (${book.closing.toFixed(2)}). Check the expenses, company payments and cash entries.`
+        : `More cash went out than came in (${d.money!.cashInHand.net.toFixed(2)}). Check the expenses and company payments.`,
+      book?.hasOpening ? `/cash?from=${day}&to=${day}` : `/expenses?from=${day}&to=${day}`,
+    );
+  if (book?.count && !book.count.difference.isZero())
+    add(
+      "warning",
+      `The cash counted was ${book.count.difference.abs().toFixed(2)} ${book.count.difference.lt(0) ? "short of" : "more than"} the cash book.`,
+      `/cash?from=${day}&to=${day}`,
     );
 
   if (d.money?.pending.overLimitList.length)

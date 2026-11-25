@@ -178,17 +178,18 @@ export function BillDocument({
               <>
                 {/* Letterhead left; the bill's number, date and order right. */}
                 <header className="flex items-start justify-between gap-4 border-b-[1.5px] border-black pb-[0.35em]">
-                  <div className="flex min-w-0 items-center gap-[0.6em]">
+                  {/* The name sits beside the logo, centred on its height. */}
+                  <div className="flex min-w-0 items-center gap-[0.8em]">
                     {business.logoUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element -- a stored data: URL; next/image adds nothing here
                       <img
                         src={business.logoUrl}
                         alt=""
-                        className="h-[4.4em] w-auto max-w-[12em] object-contain"
+                        className="h-[8em] w-auto max-w-[20em] shrink-0 object-contain"
                       />
                     ) : null}
                     <div className="min-w-0">
-                      <p className="text-[1.25em] leading-tight font-bold">{business.name}</p>
+                      <p className="text-[1.6em] leading-tight font-bold">{business.name}</p>
                       <p className={`${MUTED} truncate`}>
                         {[business.address, business.phone].filter(Boolean).join(" · ")}
                       </p>
@@ -450,7 +451,7 @@ export function CompactBillDocument({
             <img
               src={business.logoUrl}
               alt=""
-              className="h-[2.6em] w-auto max-w-[6em] shrink-0 object-contain"
+              className="h-[3.6em] w-auto max-w-[9em] shrink-0 object-contain"
             />
           ) : null}
           <div className="min-w-0">

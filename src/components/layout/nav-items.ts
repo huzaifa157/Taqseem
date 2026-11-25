@@ -1,4 +1,5 @@
 import {
+  Banknote,
   BarChart3,
   BookOpen,
   Boxes,
@@ -10,7 +11,6 @@ import {
   type LucideIcon,
   Receipt,
   Settings,
-  Sheet,
   ShoppingBag,
   ShoppingCart,
   Truck,
@@ -42,14 +42,6 @@ export const navItems: NavItem[] = [
     shortcut: false,
     letter: "C",
   },
-  {
-    title: "Bulk orders",
-    href: "/orders/bulk",
-    icon: Sheet,
-    permission: "operations.manage",
-    shortcut: false,
-    letter: "B",
-  },
   { title: "Orders", href: "/orders", icon: ShoppingCart },
   { title: "Delivery", href: "/delivery", icon: Truck },
   { title: "Purchases", href: "/purchases", icon: PackagePlus },
@@ -66,6 +58,14 @@ export const navItems: NavItem[] = [
   { title: "Companies", href: "/companies", icon: Building2 },
   { title: "Products", href: "/products", icon: Package },
   { title: "Payments", href: "/payments", icon: Wallet, permission: "payments.manage" },
+  {
+    title: "Cash book",
+    href: "/cash",
+    icon: Banknote,
+    permission: "payments.manage",
+    // No Alt+number: the sections after it keep the shortcuts people already know.
+    shortcut: false,
+  },
   { title: "Ledgers", href: "/ledgers", icon: BookOpen, permission: "ledgers.view" },
   { title: "Expenses", href: "/expenses", icon: Receipt, permission: "expenses.manage" },
   { title: "Reports", href: "/reports", icon: BarChart3 },

@@ -245,8 +245,8 @@ export const BILL_ROW_EM = 1.6;
 // head 4.9, footer 1.45,
 // totals row + account + "This bill" 9.3 (10.6 with paid, minimum payment and special discount).
 // Each has a little to spare, so a page is filled without anything spilling over.
-/** Page 1 above the lines: letterhead (logo 4.4 em tall), bill to, the column heads. */
-const FIRST_HEAD_EM = 10.5;
+/** Page 1 above the lines: letterhead (logo 8 em tall), bill to, the column heads. */
+const FIRST_HEAD_EM = 14.1;
 /** Later pages above the lines: the short header and the column heads. */
 const NEXT_HEAD_EM = 5.5;
 /** Every page's footer: the bill note or "continued", and "Page 1 of 2". */

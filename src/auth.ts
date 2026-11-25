@@ -23,10 +23,11 @@ declare module "@auth/core/jwt" {
 }
 
 /**
- * SPEC §13 session timeout. The session cookie is renewed at most every 15 minutes while the user
- * is active, so a session ends after 8 hours without activity (about one office day).
+ * SPEC §13 session timeout. The proxy (src/proxy.ts) renews the session cookie while the user is
+ * active, so a session ends only after 7 days without using the app. The office laptop stays
+ * signed in from day to day; signing out or changing the password ends it at once.
  */
-const SESSION_IDLE_TIMEOUT = 8 * 60 * 60;
+const SESSION_IDLE_TIMEOUT = 7 * 24 * 60 * 60;
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   session: { strategy: "jwt", maxAge: SESSION_IDLE_TIMEOUT, updateAge: 15 * 60 },

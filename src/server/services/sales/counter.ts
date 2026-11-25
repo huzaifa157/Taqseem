@@ -23,7 +23,7 @@ import {
   totalsWithSpecial,
   writeBillRevision,
 } from "./orders";
-import { postDamageReturn, priceDamage } from "../damage";
+import { postDamageReturn, priceDamage, reverseDamageEntry } from "../damage";
 import { customerPending, openOrdersTotal } from "./positions";
 import { postOrderBill, shortageNotes, stockOut, stockShortages } from "./post-bill";
 
@@ -44,10 +44,6 @@ export async function createCounterSale(ctx: ServiceCtx, input: unknown) {
   assertCan(ctx.user.role, "operations.manage");
   const data = counterSaleSchema.parse(input);
   const paid = data.paidAmount ? D(data.paidAmount) : D(0);
-  if (data.damaged.length > 0 && !data.customerId)
-    throw new ServiceError(
-      "Damage can be deducted only for a customer already in the list. Save the customer first.",
-    );
   return ctx.db.$transaction(
     async (tx) => {
       if (data.requestId) {
@@ -57,9 +53,13 @@ export async function createCounterSale(ctx: ServiceCtx, input: unknown) {
         });
         if (existing) return { ...existing, repeated: true };
       }
-      // Damage deducted from this bill: like money paid now, it does not use up credit.
+      // Damage deducted from this bill: like money paid now, it does not use up credit. A customer
+      // created with this sale has no saved discounts, so their damage is priced at list.
       const damage = data.damaged.length
-        ? await priceDamage(tx, data.customerId!, { damaged: data.damaged, replacements: [] })
+        ? await priceDamage(tx, data.customerId ?? null, {
+            damaged: data.damaged,
+            replacements: [],
+          })
         : null;
       const { order, bill, customer, warehouseId, lines, total, names } = await bookOrder(
         tx,
@@ -202,13 +202,28 @@ function samePayment(own: OwnPayment[], data: CounterSaleInput, paid: Prisma.Dec
   return true;
 }
 
+/** The damage on the corrected sale is the same as before: same products, quantities and rates. */
+function sameDamage(
+  before: { productId: string; quantity: number; rate: Prisma.Decimal }[],
+  after: { product: { id: string }; quantity: number; rate: Prisma.Decimal }[],
+) {
+  if (before.length !== after.length) return false;
+  const old = new Map(before.map((l) => [l.productId, l]));
+  return after.every((l) => {
+    const o = old.get(l.product.id);
+    return o !== undefined && o.quantity === l.quantity && o.rate.eq(l.rate);
+  });
+}
+
 /**
  * Corrects a counter sale after it was saved (a wrong item, quantity, discount or payment), so the
  * bill can be printed again. The bill keeps its number and gets a new revision. Nothing posted is
  * edited (CLAUDE.md rule 2): the old stock movements and bill entries get mirror entries dated on
  * the original sale day, then the corrected sale is posted like a new one. The payment taken at
  * the counter stays as it is when "Paid now" did not change; otherwise it is reversed and taken
- * again (a cleared cheque cannot be). The customer cannot change.
+ * again (a cleared cheque cannot be). Damage deducted from the bill stays as it is when it did not
+ * change; otherwise its entry is cancelled and the corrected damage posted. The customer cannot
+ * change.
  */
 export async function editCounterSale(ctx: ServiceCtx, id: string, input: unknown) {
   assertCan(ctx.user.role, "operations.manage");
@@ -222,6 +237,7 @@ export async function editCounterSale(ctx: ServiceCtx, id: string, input: unknow
           include: {
             lines: true,
             bill: true,
+            customer: { select: { name: true } },
             payments: { where: { status: "POSTED" }, include: { cheque: true } },
           },
         }),
@@ -236,6 +252,7 @@ export async function editCounterSale(ctx: ServiceCtx, id: string, input: unknow
       const bill = before.bill;
       const oldDate = bill.billDate;
       const note = `Counter sale #${before.number} corrected`;
+      const customerName = before.customer.name;
 
       // The corrected lines, priced like a new sale.
       const products = await loadProducts(
@@ -264,6 +281,21 @@ export async function editCounterSale(ctx: ServiceCtx, id: string, input: unknow
           `Later payments already paid ${formatMoney(allocated(true))} of this bill, more than the corrected bill. Reverse those payments first.`,
         );
       const keepPayment = samePayment(own, data, paid) && !allocated(false).gt(netAmount);
+
+      // Damage deducted from this bill ("− Damage"): kept when unchanged, else posted again.
+      const oldDamage = await tx.damageReturn.findMany({
+        where: { salesOrderId: id, status: "POSTED" },
+        include: { lines: { where: { kind: "DAMAGED" } } },
+      });
+      const oldDamageAmount = oldDamage.reduce((s, e) => s.add(e.damagedAmount), D(0));
+      const newDamage = data.damaged.length
+        ? await priceDamage(tx, before.customerId, { damaged: data.damaged, replacements: [] })
+        : null;
+      const newDamageAmount = newDamage?.damagedAmount ?? D(0);
+      const keepDamage = sameDamage(
+        oldDamage.flatMap((e) => e.lines),
+        newDamage?.damaged ?? [],
+      );
 
       if (!keepPayment) {
         const cleared = own.find((p) => p.cheque?.status === "CLEARED");
@@ -308,11 +340,13 @@ export async function editCounterSale(ctx: ServiceCtx, id: string, input: unknow
         oldDate,
         `Bill #${bill.number}: ${note}`,
       );
+      if (!keepDamage)
+        for (const e of oldDamage) await reverseDamageEntry(tx, ctx, e.id, note, oldDate);
 
       // Credit limit: only when more goes on account than before (a smaller bill always passes).
       const oldPaid = own.reduce((s, p) => s.add(p.amount), D(0));
-      const oldOnAccount = Prisma.Decimal.max(bill.netAmount.sub(oldPaid), 0);
-      const newOnAccount = Prisma.Decimal.max(netAmount.sub(paid), 0);
+      const oldOnAccount = Prisma.Decimal.max(bill.netAmount.sub(oldPaid).sub(oldDamageAmount), 0);
+      const newOnAccount = Prisma.Decimal.max(netAmount.sub(paid).sub(newDamageAmount), 0);
       let decision = { needsCreditApproval: false, override: false };
       if (newOnAccount.gt(oldOnAccount)) {
         const customer = await tx.customer.findUniqueOrThrow({ where: { id: before.customerId } });
@@ -321,8 +355,11 @@ export async function editCounterSale(ctx: ServiceCtx, id: string, input: unknow
           creditLimit: customer.creditLimit?.toString() ?? null,
           pending: pending.total.toString(),
           openOrders: (await openOrdersTotal(tx, customer.id)).toString(),
-          // A kept payment is still in the ledger (in `pending`).
-          thisOrder: (keepPayment ? netAmount : newOnAccount).toString(),
+          // A kept payment or kept damage is still in the ledger (in `pending`).
+          thisOrder: Prisma.Decimal.max(
+            netAmount.sub(keepPayment ? 0 : paid).sub(keepDamage ? 0 : newDamageAmount),
+            0,
+          ).toString(),
         });
         decision = creditDecision(ctx, credit, data.allowOverCredit);
         if (decision.needsCreditApproval)
@@ -370,6 +407,17 @@ export async function editCounterSale(ctx: ServiceCtx, id: string, input: unknow
             createdById: ctx.user.id,
           },
         });
+      const damageEntry =
+        !keepDamage && newDamage
+          ? await postDamageReturn(tx, ctx, {
+              customer: { id: before.customerId, name: customerName },
+              returnDate: data.saleDate,
+              note: `Deducted from counter sale #${before.number} (corrected)`,
+              salesOrderId: id,
+              damaged: data.damaged,
+              replacements: [],
+            })
+          : null;
 
       // A discount changed on this correction becomes the customer's own, as on an order edit.
       const beforeLine = new Map(before.lines.map((l) => [l.productId, lineDiscount(l)]));
@@ -435,6 +483,7 @@ export async function editCounterSale(ctx: ServiceCtx, id: string, input: unknow
           lines: before.lines.map((l) => ({ productId: l.productId, quantity: l.quantity })),
           bill: bill.netAmount,
           paid: own.map((p) => ({ number: p.number, amount: p.amount, method: p.method })),
+          damage: oldDamage.map((e) => ({ number: e.number, amount: e.damagedAmount })),
         },
         newValue: {
           saleDate: data.saleDate,
@@ -450,6 +499,11 @@ export async function editCounterSale(ctx: ServiceCtx, id: string, input: unknow
             : payment
               ? { number: payment.number, amount: paid, method: data.method }
               : null,
+          damage: keepDamage
+            ? "unchanged"
+            : damageEntry
+              ? { number: damageEntry.number, amount: damageEntry.damagedAmount }
+              : null,
           revision,
         },
       });
@@ -458,4 +512,19 @@ export async function editCounterSale(ctx: ServiceCtx, id: string, input: unknow
     // Serializable: like a new sale, two at once must not both take the same stock.
     { timeout: 60_000, isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
   );
+}
+
+/** The damage deducted from a counter sale, as lines for the correction form. */
+export async function counterSaleDamage(ctx: ServiceCtx, orderId: string) {
+  const entries = await ctx.db.damageReturn.findMany({
+    where: { salesOrderId: orderId, status: "POSTED" },
+    include: { lines: { where: { kind: "DAMAGED" }, orderBy: { id: "asc" } } },
+    orderBy: { createdAt: "asc" },
+  });
+  return {
+    amount: entries.reduce((s, e) => s.add(e.damagedAmount), D(0)),
+    lines: entries.flatMap((e) =>
+      e.lines.map((l) => ({ productId: l.productId, quantity: l.quantity, rate: l.rate })),
+    ),
+  };
 }

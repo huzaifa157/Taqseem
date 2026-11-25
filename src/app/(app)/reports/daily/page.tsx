@@ -238,11 +238,23 @@ function KeyNumbers({ r }: { r: DailyReport }) {
             value={formatMoney(r.money.pending.total)}
             note={`${r.money.pending.customers} customers · ${r.money.pending.overLimit} over limit`}
           />
-          <Figure
-            label="Cash in hand (today)"
-            value={formatMoney(r.money.cashInHand.net)}
-            note="cash in − cash out"
-          />
+          {r.money.cashInHand.book?.hasOpening ? (
+            <Figure
+              label="Cash in hand (end of day)"
+              value={formatMoney(r.money.cashInHand.book.closing)}
+              note={
+                r.money.cashInHand.book.count
+                  ? `counted ${formatMoney(r.money.cashInHand.book.count.counted)}`
+                  : `opening ${formatMoney(r.money.cashInHand.book.opening)} + the day's cash`
+              }
+            />
+          ) : (
+            <Figure
+              label="Cash in hand (today)"
+              value={formatMoney(r.money.cashInHand.net)}
+              note="cash in − cash out"
+            />
+          )}
           <Figure
             label="Expenses"
             value={formatMoney(r.money.expenses.total)}
@@ -628,19 +640,8 @@ function Money({
           ) : null}
         </div>
         <div className="space-y-[0.4em]">
-          <p className="font-semibold">Cash in hand (today)</p>
-          <dl className="grid grid-cols-[1fr_auto] gap-x-3">
-            <dt>Cash received</dt>
-            <dd className={num}>{formatMoney(money.cashInHand.in)}</dd>
-            <dt>− Cash expenses</dt>
-            <dd className={num}>{formatMoney(money.cashInHand.expenses)}</dd>
-            <dt>− Cash paid to companies</dt>
-            <dd className={num}>{formatMoney(money.cashInHand.toCompanies)}</dd>
-            <dt className="border-t border-black font-bold">Cash in hand</dt>
-            <dd className={`border-t border-black font-bold ${num}`}>
-              {formatMoney(money.cashInHand.net)}
-            </dd>
-          </dl>
+          <p className="font-semibold">Cash in hand</p>
+          <CashInHand cash={money.cashInHand} />
           <p className="font-semibold">Expenses</p>
           {money.expenses.byCategory.length === 0 ? (
             <p>None.</p>
@@ -849,5 +850,66 @@ function Stock({ r }: { r: DailyReport }) {
         </details>
       ) : null}
     </Section>
+  );
+}
+
+/** The day's cash: from the cash book when opening cash is set (opening to closing, count). */
+function CashInHand({ cash }: { cash: NonNullable<DailyReport["money"]>["cashInHand"] }) {
+  const num = "text-right tabular-nums";
+  const book = cash.book?.hasOpening ? cash.book : null;
+  return (
+    <dl className="grid grid-cols-[1fr_auto] gap-x-3">
+      {book ? (
+        <>
+          <dt>Opening cash</dt>
+          <dd className={num}>{formatMoney(book.opening)}</dd>
+        </>
+      ) : null}
+      <dt>+ Cash received</dt>
+      <dd className={num}>{formatMoney(cash.in)}</dd>
+      <dt>− Cash expenses</dt>
+      <dd className={num}>{formatMoney(cash.expenses)}</dd>
+      <dt>− Cash paid to companies</dt>
+      <dd className={num}>{formatMoney(cash.toCompanies)}</dd>
+      {book && !book.added.isZero() ? (
+        <>
+          <dt>+ Cash put in / from bank</dt>
+          <dd className={num}>{formatMoney(book.added)}</dd>
+        </>
+      ) : null}
+      {book && !book.taken.isZero() ? (
+        <>
+          <dt>− Cash taken out / to bank</dt>
+          <dd className={num}>{formatMoney(book.taken)}</dd>
+        </>
+      ) : null}
+      <dt className="border-t border-black font-bold">
+        {book ? "Closing cash" : "Cash in hand (today)"}
+      </dt>
+      <dd className={`border-t border-black font-bold ${num}`}>
+        {formatMoney(book ? book.closing : cash.net)}
+      </dd>
+      {book?.count ? (
+        <>
+          <dt>Cash counted</dt>
+          <dd className={num}>{formatMoney(book.count.counted)}</dd>
+          {book.count.difference.isZero() ? null : (
+            <>
+              <dt className="font-semibold">{book.count.difference.lt(0) ? "Short" : "Extra"}</dt>
+              <dd className={`font-semibold ${num}`}>{formatMoney(book.count.difference.abs())}</dd>
+            </>
+          )}
+        </>
+      ) : null}
+      {book ? null : (
+        <dd className="text-muted-foreground col-span-2 text-xs print:hidden">
+          Enter the opening cash in the{" "}
+          <Link href="/cash" className="underline">
+            Cash book
+          </Link>{" "}
+          to carry cash from day to day.
+        </dd>
+      )}
+    </dl>
   );
 }

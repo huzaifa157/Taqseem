@@ -88,6 +88,27 @@ enum PostingStatus {
   REVERSED
 }
 
+/// Cash book entries that are not a sale, payment or expense.
+enum CashEntryKind {
+  /// The cash in the drawer when the book starts (one at a time).
+  OPENING
+  /// The owner puts cash in.
+  ADDED
+  /// The owner takes cash out.
+  TAKEN_OUT
+  /// Cash taken to the bank.
+  BANK_DEPOSIT
+  /// Cash brought from the bank.
+  BANK_WITHDRAWAL
+  /// The book set to the cash counted (short or extra).
+  COUNT_DIFFERENCE
+}
+
+enum CashDirection {
+  IN
+  OUT
+}
+
 enum PaperSize {
   A4
   A5
@@ -313,6 +334,8 @@ model Tenant {
   expenseCategories    ExpenseCategory[]
   expenses             Expense[]
   recurringExpenses    RecurringExpense[]
+  cashEntries          CashEntry[]
+  cashCounts           CashCount[]
   ledgerEntries        LedgerEntry[]
   customerReturns      CustomerReturn[]
   damageReturns        DamageReturn[]
@@ -1126,6 +1149,53 @@ model Expense {
   @@index([tenantId, expenseDate])
   @@index([tenantId, categoryId, expenseDate])
   @@index([tenantId, companyId])
+}
+
+/// Cash book: opening cash, cash added or taken out, bank deposits and withdrawals, count
+/// differences. Sales, payments and expenses come from their own tables. Never edited; a mistake
+/// is cancelled with a reason.
+model CashEntry {
+  id             String        @id @default(cuid())
+  tenantId       String
+  number         Int
+  entryDate      DateTime      @db.Date
+  kind           CashEntryKind
+  direction      CashDirection
+  amount         Decimal       @db.Decimal(14, 2)
+  note           String?
+  status         PostingStatus @default(POSTED)
+  reversedAt     DateTime?
+  reversalReason String?
+  requestId      String?
+  createdById    String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, number])
+  @@unique([tenantId, requestId])
+  @@index([tenantId, entryDate])
+}
+
+/// The cash counted in the drawer at the end of a day (one per day; a recount replaces it).
+model CashCount {
+  id          String   @id @default(cuid())
+  tenantId    String
+  countDate   DateTime @db.Date
+  counted     Decimal  @db.Decimal(14, 2)
+  /// What the book said when it was counted.
+  expected    Decimal  @db.Decimal(14, 2)
+  note        String?
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, countDate])
 }
 
 // ───────────────────────────── Sales ─────────────────────────────

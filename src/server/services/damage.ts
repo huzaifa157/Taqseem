@@ -104,7 +104,8 @@ type DamageLine = { productId: string; quantity: number; rate: string | null };
  */
 export async function priceDamage(
   tx: TenantTx,
-  customerId: string,
+  /** null: a customer created with this counter sale, who has no saved discounts yet. */
+  customerId: string | null,
   data: { damaged: DamageLine[]; replacements: DamageLine[] },
 ) {
   const ids = [...new Set([...data.damaged, ...data.replacements].map((l) => l.productId))];
@@ -116,7 +117,7 @@ export async function priceDamage(
         company: { select: { warehouseId: true, name: true } },
       },
     }),
-    savedDiscounts(tx, customerId, ids),
+    customerId ? savedDiscounts(tx, customerId, ids) : new Map<string, Prisma.Decimal>(),
   ]);
   const byId = new Map(products.map((p) => [p.id, p]));
   if (byId.size !== ids.length) throw new ServiceError("A product was not found.");
@@ -319,49 +320,58 @@ export async function postDamageReturn(
 export async function reverseDamageReturn(ctx: ServiceCtx, input: unknown) {
   assertCan(ctx.user.role, "documents.reverse");
   const { id, reason } = reverseSchema.parse(input);
-  return ctx.db.$transaction(
-    async (tx) => {
-      const entry = found(
-        await tx.damageReturn.findUnique({
-          where: { id },
-          include: { claims: true, lines: { include: { product: true } } },
-        }),
-        "damage entry",
-      );
-      const applied = entry.claims.find((c) => c.status === "APPLIED");
-      if (applied)
-        throw new ServiceError(
-          `Its claim #${applied.number} was already deducted on a company bill, so this damage cannot be cancelled.`,
-        );
-      const claimed = await tx.damageReturn.updateMany({
-        where: { id, status: "POSTED" },
-        data: { status: "REVERSED", reversedAt: new Date(), reversalReason: reason },
-      });
-      if (claimed.count === 0) throw new ServiceError("This damage entry is already cancelled.");
-      const today = businessToday();
-      const note = `Damage #${entry.number} cancelled: ${reason}`;
+  return ctx.db.$transaction((tx) => reverseDamageEntry(tx, ctx, id, reason, businessToday()), {
+    timeout: 30_000,
+    isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+  });
+}
 
-      await reverseStock(tx, ctx, entry.id, today, note);
-      await reverseLedgerFor(tx, ctx, { type: "DamageReturn", id }, today, note);
-      for (const c of entry.claims.filter(
-        (x) => x.status === "AWAITING" || x.status === "PENDING",
-      )) {
-        await reverseLedgerFor(tx, ctx, { type: "CompanyClaim", id: c.id }, today, note);
-        await tx.companyClaim.update({
-          where: { id: c.id },
-          data: { status: "REVERSED", reversedAt: new Date() },
-        });
-      }
-      await writeAudit(tx, ctx.user, {
-        action: "REVERSE",
-        entityType: "DamageReturn",
-        entityId: id,
-        oldValue: { status: "POSTED" },
-        newValue: { status: "REVERSED", reason },
-      });
-    },
-    { timeout: 30_000, isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+/**
+ * The reversal itself, inside the caller's transaction (also used when a counter sale's damage is
+ * corrected). `at`: the date of the mirror entries.
+ */
+export async function reverseDamageEntry(
+  tx: TenantTx,
+  ctx: ServiceCtx,
+  id: string,
+  reason: string,
+  at: Date,
+) {
+  const entry = found(
+    await tx.damageReturn.findUnique({
+      where: { id },
+      include: { claims: true, lines: { include: { product: true } } },
+    }),
+    "damage entry",
   );
+  const applied = entry.claims.find((c) => c.status === "APPLIED");
+  if (applied)
+    throw new ServiceError(
+      `Damage #${entry.number}: its claim #${applied.number} was already deducted on a company bill, so this damage cannot be cancelled.`,
+    );
+  const claimed = await tx.damageReturn.updateMany({
+    where: { id, status: "POSTED" },
+    data: { status: "REVERSED", reversedAt: new Date(), reversalReason: reason },
+  });
+  if (claimed.count === 0) throw new ServiceError("This damage entry is already cancelled.");
+  const note = `Damage #${entry.number} cancelled: ${reason}`;
+
+  await reverseStock(tx, ctx, entry.id, at, note);
+  await reverseLedgerFor(tx, ctx, { type: "DamageReturn", id }, at, note);
+  for (const c of entry.claims.filter((x) => x.status === "AWAITING" || x.status === "PENDING")) {
+    await reverseLedgerFor(tx, ctx, { type: "CompanyClaim", id: c.id }, at, note);
+    await tx.companyClaim.update({
+      where: { id: c.id },
+      data: { status: "REVERSED", reversedAt: new Date() },
+    });
+  }
+  await writeAudit(tx, ctx.user, {
+    action: "REVERSE",
+    entityType: "DamageReturn",
+    entityId: id,
+    oldValue: { status: "POSTED" },
+    newValue: { status: "REVERSED", reason },
+  });
 }
 
 async function reverseStock(

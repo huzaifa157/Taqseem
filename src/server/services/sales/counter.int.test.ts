@@ -344,15 +344,23 @@ describe("counter sale", () => {
     expect(damaged._sum.quantity).toBe(6);
   });
 
-  it("deducts damage only for a customer already in the list", async () => {
-    await expect(
-      createCounterSale(t.ctx, {
-        newCustomerName: "Walk-in",
-        saleDate: DAY,
-        lines: [{ productId: t.chips.id, quantity: "1" }],
-        damaged: [{ productId: t.chips.id, quantity: "6pk" }],
-      }),
-    ).rejects.toThrow(/customer already in the list/);
+  it("deducts damage for a customer created with the sale too", async () => {
+    // Replacement: 1 dz given (224) for 1 dz damaged at the list rate less discount (224).
+    const r = await createCounterSale(t.ctx, {
+      newCustomerName: "Walk-in",
+      warehouseId: t.main.id,
+      saleDate: DAY,
+      lines: [{ productId: t.chips.id, quantity: "1" }],
+      damaged: [{ productId: t.chips.id, quantity: "1" }],
+    });
+    const order = await t.ctx.db.salesOrder.findUniqueOrThrow({ where: { id: r.id } });
+    const damage = await t.ctx.db.damageReturn.findFirstOrThrow({ where: { salesOrderId: r.id } });
+    expect([damage.customerId, damage.damagedAmount.toFixed(2)]).toEqual([
+      order.customerId,
+      "224.00",
+    ]);
+    // Nothing owed: the damage paid for the new dozen.
+    expect((await customerPending(t.ctx.db, order.customerId)).total.toFixed(2)).toBe("0.00");
   });
 
   it("is not allowed without operations access", async () => {
@@ -366,6 +374,59 @@ describe("counter sale", () => {
         where: { referenceType: "Bill", referenceId: billId },
         _sum: { debit: true, credit: true },
       });
+    const damageOf = (orderId: string) =>
+      t.ctx.db.damageReturn.findMany({
+        where: { salesOrderId: orderId },
+        orderBy: { number: "asc" },
+        select: { status: true, damagedAmount: true },
+      });
+    const damagedStock = async () =>
+      (
+        await t.ctx.db.stockMovement.aggregate({
+          where: { productId: t.chips.id, bucket: "DAMAGED" },
+          _sum: { quantity: true },
+        })
+      )._sum.quantity ?? 0;
+
+    it("adds damage that was forgotten when the sale was saved", async () => {
+      // 5 dz = 1120, all on account; corrected with 1 dz damage (224) deducted.
+      const r = await createCounterSale(t.ctx, sale("5"));
+      await editCounterSale(
+        t.ctx,
+        r.id,
+        sale("5", { damaged: [{ productId: t.chips.id, quantity: "1" }] }),
+      );
+      expect((await damageOf(r.id)).map((d) => [d.status, d.damagedAmount.toFixed(2)])).toEqual([
+        ["POSTED", "224.00"],
+      ]);
+      // Opening 4000 + bill 1120 − damage 224.
+      expect((await customerPending(t.ctx.db, t.customer.id)).total.toFixed(2)).toBe("4896.00");
+      expect(await damagedStock()).toBe(12);
+      const view = await getBillView(t.ctx, r.id);
+      expect(view.damage.amount.toFixed(2)).toBe("224.00");
+    });
+
+    it("keeps unchanged damage, replaces changed damage and removes cleared damage", async () => {
+      const damaged = (q: string) => [{ productId: t.chips.id, quantity: q, rate: "224" }];
+      const r = await createCounterSale(t.ctx, sale("5", { damaged: damaged("1") }));
+      // Same damage, other quantity sold: the damage entry stays.
+      await editCounterSale(t.ctx, r.id, sale("4", { damaged: damaged("1") }));
+      expect((await damageOf(r.id)).map((d) => d.status)).toEqual(["POSTED"]);
+      // Damage changed to 2 dz: the old entry is cancelled, the new one posted.
+      await editCounterSale(t.ctx, r.id, sale("4", { damaged: damaged("2") }));
+      expect((await damageOf(r.id)).map((d) => [d.status, d.damagedAmount.toFixed(2)])).toEqual([
+        ["REVERSED", "224.00"],
+        ["POSTED", "448.00"],
+      ]);
+      expect(await damagedStock()).toBe(24);
+      // 4000 + 896 − 448.
+      expect((await customerPending(t.ctx.db, t.customer.id)).total.toFixed(2)).toBe("4448.00");
+      // Damage taken off: nothing deducted any more.
+      await editCounterSale(t.ctx, r.id, sale("4"));
+      expect((await damageOf(r.id)).map((d) => d.status)).toEqual(["REVERSED", "REVERSED"]);
+      expect(await damagedStock()).toBe(0);
+      expect((await customerPending(t.ctx.db, t.customer.id)).total.toFixed(2)).toBe("4896.00");
+    });
 
     it("reverses the old stock and bill, posts the corrected one and keeps the bill number", async () => {
       // 5 dz = 1120, paid 500 cash.

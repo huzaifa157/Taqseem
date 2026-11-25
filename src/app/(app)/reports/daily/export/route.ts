@@ -31,6 +31,15 @@ export async function GET(request: Request) {
       [{ value: "Expenses" }, xMoney(r.money.expenses.total)],
       [{ value: "Paid to companies" }, xMoney(r.money.companyPayments)],
       [{ value: "Cash in hand (today)" }, xMoney(r.money.cashInHand.net)],
+      ...(r.money.cashInHand.book?.hasOpening
+        ? [
+            [{ value: "Opening cash" }, xMoney(r.money.cashInHand.book.opening)],
+            [{ value: "Closing cash" }, xMoney(r.money.cashInHand.book.closing)],
+            ...(r.money.cashInHand.book.count
+              ? [[{ value: "Cash counted" }, xMoney(r.money.cashInHand.book.count.counted)]]
+              : []),
+          ]
+        : []),
       [{ value: "Customers owe (end of day)" }, xMoney(r.money.pending.total)],
     );
   }

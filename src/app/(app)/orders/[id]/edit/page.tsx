@@ -10,6 +10,7 @@ import { can } from "@/server/auth/permissions";
 import { requireTenantContext } from "@/server/auth/session";
 import { correctCounterSaleAction, saveSalesOrderAction } from "@/server/sales-actions";
 import { warehouseOptions } from "@/server/services/master/warehouses";
+import { counterSaleDamage } from "@/server/services/sales/counter";
 import { customersForOrders, getSalesOrder } from "@/server/services/sales/orders";
 import { addToBalanceAction } from "@/server/payment-actions";
 
@@ -28,6 +29,8 @@ export default async function EditOrderPage({ params }: PageProps<"/orders/[id]/
   const counter = order.fulfilment === "COUNTER" && order.status === "DELIVERED";
   if (!counter && !isOpenOrder(order.status)) redirect(`/orders/${id}`);
   const payment = order.payments[0];
+  // Damage already deducted from this sale: shown in "− Damage" so it can be corrected too.
+  const damage = counter ? await counterSaleDamage(ctx, id) : null;
   return (
     <>
       <OrderEntry
@@ -89,7 +92,9 @@ export default async function EditOrderPage({ params }: PageProps<"/orders/[id]/
                   bankName: payment.cheque?.bankName ?? "",
                   chequeDate: payment.cheque ? toDateInput(payment.cheque.chequeDate) : "",
                   // Paid the whole bill: "Full" stays on, so the payment follows a corrected total.
-                  full: order.bill ? payment.amount.eq(order.bill.netAmount) : false,
+                  full: order.bill
+                    ? payment.amount.eq(order.bill.netAmount.sub(damage?.amount ?? 0))
+                    : false,
                 }
               : undefined,
           lines: order.lines.map((l) => ({
@@ -98,6 +103,11 @@ export default async function EditOrderPage({ params }: PageProps<"/orders/[id]/
             // The customer's discount this order has (blank: the product's own discount applied).
             // A rate changed on an older order is not kept: rates are fixed now.
             discount: l.customerDiscount ? l.discountValue.toFixed(2) : "",
+          })),
+          damage: damage?.lines.map((l) => ({
+            productId: l.productId,
+            qty: quantityText(l.quantity),
+            rate: l.rate.toFixed(2),
           })),
         }}
       />
